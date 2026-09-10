@@ -169,6 +169,18 @@ public class RecognizeActivity extends AppCompatActivity {
         });
     }
 
+    // Called from Rust during streaming — show the live hypothesis in the
+    // panel so the user sees text appear while speaking.
+    public void onPartialText(String committed, String tentative) {
+        runOnUiThread(() -> {
+            if (!isRecording) return;
+            String live = (committed == null ? "" : committed) + (tentative == null ? "" : tentative);
+            if (!live.isEmpty()) {
+                status.setText(live);
+            }
+        });
+    }
+
     private boolean isPauseAudioEnabled() {
         return new java.io.File(getFilesDir(), "pause_audio").exists();
     }

@@ -126,6 +126,22 @@ public class VoiceRecognitionService extends RecognitionService {
         });
     }
 
+    // Called from Rust during streaming — live hypothesis as partial results,
+    // so keyboards that render partials (Gboard-style) update in real time.
+    public void onPartialText(String committed, String tentative) {
+        final String partial = (committed == null ? "" : committed) + (tentative == null ? "" : tentative);
+        if (partial.isEmpty()) return;
+        mainHandler.post(() -> {
+            Callback cb = mCallback;
+            if (cb == null) return;
+            ArrayList<String> hypotheses = new ArrayList<>();
+            hypotheses.add(partial);
+            Bundle bundle = new Bundle();
+            bundle.putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, hypotheses);
+            try { cb.partialResults(bundle); } catch (RemoteException ignored) {}
+        });
+    }
+
     public void onEndOfSpeech() {
         mainHandler.post(() -> {
             Callback cb = mCallback;

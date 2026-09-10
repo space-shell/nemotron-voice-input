@@ -80,6 +80,10 @@ public class RustInputMethodService extends InputMethodService {
     // process audio. Flushed from onStartInputView once a field is focused
     // again so the text is never lost.
     private String pendingCommitText = null;
+    // Prefix of the current streaming utterance already committed to the
+    // field via commitText. The engine's committed text only grows, so the
+    // delta (committed - committedBase) is what still needs committing.
+    private String committedBase = "";
 
     @Override
     public void onCreate() {
@@ -421,7 +425,9 @@ public class RustInputMethodService extends InputMethodService {
     private void updateUiState() {
         boolean isLoading = lastStatus.contains("Loading") || lastStatus.contains("Initializing");
         boolean isWaiting = lastStatus.contains("Waiting");
-        boolean isTranscribing = lastStatus.contains("Transcribing") || lastStatus.contains("Processing");
+        boolean isTranscribing = lastStatus.contains("Transcribing")
+                || lastStatus.contains("Processing")
+                || lastStatus.contains("Finishing");
         boolean isError = lastStatus.startsWith("Error");
         boolean isReady = lastStatus.equals("Ready");
 
@@ -453,11 +459,41 @@ public class RustInputMethodService extends InputMethodService {
         }
     }
 
-    // Called from Rust
+    // Called from Rust during streaming: `committed` is the append-only
+    // UI-stable prefix, `tentative` the still-revisable tail. The stable
+    // delta is committed (commitText replaces any active composing region —
+    // i.e. the previous tentative tail), then the new tail becomes the
+    // composing region so it can still be refined by later updates.
+    public void onPartialText(String committed, String tentative) {
+        mainHandler.post(() -> {
+            if (!isRecording) return;
+            InputConnection ic = getCurrentInputConnection();
+            if (inputActive && ic != null) {
+                if (committed != null && committed.length() > committedBase.length()) {
+                    ic.commitText(committed.substring(committedBase.length()), 1);
+                    committedBase = committed;
+                }
+                ic.setComposingText(tentative == null ? "" : tentative, 1);
+            }
+            if (statusView != null && !lastStatus.startsWith("Error")) {
+                String live = (committed == null ? "" : committed) + (tentative == null ? "" : tentative);
+                statusView.setText(live.isEmpty() ? "Listening..." : live);
+            }
+        });
+    }
+
+    // Called from Rust when the stream is finalized. With streaming, most of
+    // the text is usually already committed via onPartialText; only the
+    // remainder (plus the trailing space) is committed here.
     public void onTextTranscribed(String text) {
         mainHandler.post(() -> {
-            if (text == null || text.trim().isEmpty()) {
-                // Nothing recognized — don't insert a stray space.
+            String finalText = text == null ? "" : text.trim();
+            if (finalText.isEmpty()) {
+                // Nothing recognized — clear any composing tail, don't insert
+                // a stray space.
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) ic.finishComposingText();
+                committedBase = "";
                 updateRecordButtonUI(false);
                 if (statusView != null) statusView.setText("Tap to Record");
                 if (pauseAudioActive) {
@@ -470,17 +506,39 @@ public class RustInputMethodService extends InputMethodService {
                 }
                 return;
             }
-            String committed = text + " ";
             InputConnection ic = getCurrentInputConnection();
             if (inputActive && ic != null) {
-                commitTranscribedText(ic, committed);
+                // Commit the not-yet-committed remainder (this also replaces
+                // the composing region), then the trailing space, keeping the
+                // batch-era convention of a space after each utterance.
+                String remainder = finalText.length() > committedBase.length()
+                        ? finalText.substring(committedBase.length()) : null;
+                if (remainder != null && !remainder.isEmpty()) {
+                    ic.commitText(remainder, 1);
+                } else {
+                    ic.finishComposingText();
+                }
+                ic.commitText(" ", 1);
+
+                if (!pendingSwitchBack && new File(getFilesDir(), "select_transcription").exists()) {
+                    android.view.inputmethod.ExtractedText et = ic.getExtractedText(
+                            new android.view.inputmethod.ExtractedTextRequest(), 0);
+                    if (et != null) {
+                        int end = et.selectionStart;
+                        int start = end - (finalText.length() + 1);
+                        if (start >= 0) {
+                            ic.setSelection(start, end);
+                        }
+                    }
+                }
             } else {
-                // No editor is focused right now (common on long transcribes where
-                // a web field in Firefox/Gemini dropped focus while we processed
-                // audio). Committing now would be silently dropped, so defer the
-                // text until a field is focused again instead of losing it.
-                pendingCommitText = committed;
+                // No editor is focused right now (the field dropped focus
+                // mid-dictation). Committing now would be silently dropped, so
+                // defer the full text until a field is focused again instead
+                // of losing it.
+                pendingCommitText = finalText + " ";
             }
+            committedBase = "";
             if (pauseAudioActive) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
@@ -494,24 +552,6 @@ public class RustInputMethodService extends InputMethodService {
         });
     }
 
-    // Commits transcribed text into the active input connection, optionally
-    // selecting it afterwards (select_transcription setting).
-    private void commitTranscribedText(InputConnection ic, String committed) {
-        ic.commitText(committed, 1);
-
-        if (!pendingSwitchBack && new File(getFilesDir(), "select_transcription").exists()) {
-            android.view.inputmethod.ExtractedText et = ic.getExtractedText(
-                new android.view.inputmethod.ExtractedTextRequest(), 0);
-            if (et != null) {
-                int end = et.selectionStart;
-                int start = end - committed.length();
-                if (start >= 0) {
-                    ic.setSelection(start, end);
-                }
-            }
-        }
-    }
-
     // Commits text that finished transcribing while no field was focused. Called
     // from onStartInputView when an editor (and a live input connection) is
     // available again.
@@ -519,7 +559,7 @@ public class RustInputMethodService extends InputMethodService {
         if (pendingCommitText == null) return;
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) {
-            commitTranscribedText(ic, pendingCommitText);
+            ic.commitText(pendingCommitText, 1);
             pendingCommitText = null;
         }
     }

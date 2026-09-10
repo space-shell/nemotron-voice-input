@@ -247,7 +247,20 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
             let cancelled = state.cancelled.clone();
             let overflow = state.overflow.clone();
             std::thread::spawn(move || {
-                run_stream_consumer(jvm, target_ref, rx, cancelled, overflow);
+                spawn_stream_consumer(
+                    jvm,
+                    target_ref,
+                    rx,
+                    cancelled,
+                    overflow,
+                    |env, obj, result| match result {
+                        Ok(text) => {
+                            notify_status(env, obj, "Ready");
+                            notify_text(env, obj, &text);
+                        }
+                        Err(msg) => notify_status(env, obj, &format!("Error: {}", msg)),
+                    },
+                );
             });
 
             s.play().ok();
@@ -301,37 +314,43 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
 
 /// Owns a dedicated session + stream for one recording. Runs until the sender
 /// is dropped (manual/auto stop → finalize) or the session is cancelled /
-/// overflows (abandon). Same panic-hardening as `engine::transcribe_shared`:
-/// a panic anywhere in the engine stack surfaces as a normal error instead
-/// of freezing every later one.
-fn run_stream_consumer(
+/// overflows (abandon). Partials go to `target` via `onPartialText`; the final
+/// outcome goes to `deliver`, executed on this thread with an attached JNIEnv.
+/// Same panic-hardening as `engine::transcribe_shared`: a panic anywhere in
+/// the engine stack surfaces as a normal error instead of freezing every
+/// later one.
+pub fn spawn_stream_consumer<F>(
     jvm: Arc<jni::JavaVM>,
     target_ref: GlobalRef,
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     cancelled: Arc<AtomicBool>,
     overflow: Arc<AtomicBool>,
-) {
+    deliver: F,
+) where
+    F: FnOnce(&mut JNIEnv, &JObject, Result<String, String>) + Send + 'static,
+{
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stream_consumer_body(&jvm, &target_ref, rx, &cancelled, &overflow)
+        stream_session_body(&jvm, &target_ref, rx, &cancelled, &overflow)
     }))
     .unwrap_or_else(|_| {
         log::error!("streaming consumer panicked; reporting as error");
         Err("transcription failed unexpectedly, please try again".to_string())
     });
-    if let Err(msg) = result {
-        if let Ok(mut env) = jvm.attach_current_thread() {
-            notify_status(&mut env, target_ref.as_obj(), &format!("Error: {}", msg));
-        }
+    if let Ok(mut env) = jvm.attach_current_thread() {
+        deliver(&mut env, target_ref.as_obj(), result);
     }
 }
 
-fn stream_consumer_body(
+/// Runs one streaming session over the channel. Returns the final text
+/// (sender dropped → drain + finalize), or `Ok(())`-without-text semantics
+/// for cancellation: `Ok(String::new())` means cancelled/abandoned.
+fn stream_session_body(
     jvm: &Arc<jni::JavaVM>,
     target_ref: &GlobalRef,
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     cancelled: &Arc<AtomicBool>,
     overflow: &Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut env = jvm
         .attach_current_thread()
         .map_err(|_| "Failed to attach JNI thread".to_string())?;
@@ -372,8 +391,7 @@ fn stream_consumer_body(
         // Cancel beats everything: abandon without finalizing.
         if cancelled.load(Ordering::SeqCst) {
             stream.reset();
-            notify_status(&mut env, obj, "Canceled");
-            return Ok(());
+            return Ok(String::new());
         }
         if overflow.load(Ordering::SeqCst) {
             stream.reset();
@@ -427,9 +445,7 @@ fn stream_consumer_body(
         final_text
     );
 
-    notify_status(&mut env, obj, "Ready");
-    notify_text(&mut env, obj, &final_text);
-    Ok(())
+    Ok(final_text)
 }
 
 pub fn stop_recording(mut env: JNIEnv, state: &mut VoiceSessionState) {
