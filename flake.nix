@@ -26,7 +26,7 @@
         };
         android = pkgs.androidenv.composeAndroidPackages {
           platformVersions = [ "35" ];
-          buildToolsVersions = [ "35.0.0" ];
+          buildToolsVersions = [ "35.0.0" "34.0.0" ];
           # The app's Rust/NDK build expects NDK 28.0.13004108 (see README).
           includeNDK = true;
           ndkVersions = [ "28.0.13004108" ];
