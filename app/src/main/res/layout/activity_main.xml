@@ -203,7 +203,7 @@
                             android:layout_width="24dp"
                             android:layout_height="24dp"
                             android:src="@drawable/ic_model"
-                            android:contentDescription="@string/models_section"
+                            android:contentDescription="@string/engine_section"
                             app:tint="?attr/colorPrimary"
                             android:layout_marginEnd="12dp"/>
 
@@ -211,34 +211,28 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="@string/models_section"
+                            android:text="@string/engine_section"
                             android:textAppearance="?attr/textAppearanceTitleLarge"/>
                     </LinearLayout>
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="@string/models_desc"
+                        android:text="@string/engine_desc"
                         android:textAppearance="?attr/textAppearanceBodyMedium"
                         android:textColor="?attr/colorOnSurfaceVariant"
                         android:layout_marginBottom="8dp"/>
 
-                    <!-- Native engine warm-up state, updated from Rust. -->
-                    <TextView
-                        android:id="@+id/text_status"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/status_checking"
-                        android:textAppearance="?attr/textAppearanceBodySmall"
-                        android:textColor="?attr/colorOnSurfaceVariant"
-                        android:layout_marginBottom="16dp"/>
-
-                    <Button
-                        android:id="@+id/btn_models"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/btn_models"/>
-                </LinearLayout>
+                     <!-- Native engine warm-up state, updated from Rust. -->
+                     <TextView
+                         android:id="@+id/text_status"
+                         android:layout_width="match_parent"
+                         android:layout_height="wrap_content"
+                         android:text="@string/status_checking"
+                         android:textAppearance="?attr/textAppearanceBodySmall"
+                         android:textColor="?attr/colorOnSurfaceVariant"
+                         android:layout_marginBottom="16dp"/>
+                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
             <!-- 4. Appearance Card -->

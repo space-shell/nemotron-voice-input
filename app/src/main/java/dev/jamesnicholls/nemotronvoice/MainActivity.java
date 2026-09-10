@@ -81,9 +81,6 @@ public class MainActivity extends AppCompatActivity {
 
         findViewById(R.id.btn_subs_advanced).setOnClickListener(v -> showSubsAdvancedDialog());
 
-        findViewById(R.id.btn_models).setOnClickListener(v ->
-                startActivity(new Intent(this, ModelsActivity.class)));
-
         benchButton = findViewById(R.id.btn_benchmark);
         benchResultText = findViewById(R.id.text_bench_result);
         benchButton.setOnClickListener(v -> runBenchmark());

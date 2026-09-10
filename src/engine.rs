@@ -2,10 +2,8 @@
 //!
 //! The engine is a process-wide singleton behind `Arc<Mutex<..>>`: a
 //! transcribe.cpp session may only be used by one thread at a time, which the
-//! mutex guarantees. Model selection is read from marker files in filesDir
-//! (written by `ModelsActivity`): an imported GGUF if one is selected, the
-//! bundled model otherwise — with the bundled model as fallback if the
-//! imported one fails to load.
+//! mutex guarantees. Exactly one model exists — the Nemotron speech streaming
+//! GGUF bundled in the APK assets — so there is no selection state.
 
 use once_cell::sync::Lazy;
 use std::path::Path;
@@ -16,176 +14,39 @@ use jni::JNIEnv;
 
 use crate::assets;
 
-/// File in filesDir naming the imported GGUF (a file under `models/`) to use
-/// instead of the bundled model. Absent or empty = bundled model.
-const ACTIVE_MODEL_FILE: &str = "active_model";
-/// File in filesDir with an optional language hint — a locale like `en-US`
-/// or `auto`. Absent or empty = let the model autodetect.
-const MODEL_LANGUAGE_FILE: &str = "model_language";
-/// Marker file in filesDir: when present, models that support translation
-/// (e.g. Whisper) translate speech to English instead of transcribing it.
-/// Ignored by models without translation support.
-const MODEL_TRANSLATE_FILE: &str = "model_translate";
 /// Optional file in filesDir with the CPU thread count for inference.
-/// Absent/invalid/0 = default (all cores).
+/// Absent/invalid/0 = default (performance-core heuristic).
 const MODEL_THREADS_FILE: &str = "model_threads";
 
-/// Longest audio passed to the model in one run (60 s). Offline conformer
-/// models use full self-attention, whose cost grows quadratically with input
-/// length — an unbounded shared audio file would exhaust memory on a phone.
-/// Longer input is split at quiet points and the texts joined.
-const MAX_RUN_SAMPLES: usize = 60 * 16_000;
-/// When splitting, search this far back from the hard boundary for the
-/// quietest point so words aren't cut mid-syllable.
-const SPLIT_SEARCH_SAMPLES: usize = 10 * 16_000;
-
-/// A loaded transcribe.cpp session plus the options applied to every run.
+/// A loaded transcribe.cpp session.
 pub struct Engine {
     session: transcribe_cpp::Session,
-    language: Option<String>,
-    task: transcribe_cpp::Task,
-    /// Family-specific decode options attached to every run; `None` for
-    /// models that don't take the whisper run extension.
-    run_ext: Option<transcribe_cpp::RunExtension>,
-    /// Status reported once loading succeeded; carries a warning when the
-    /// translate setting can't do what the user expects with this model.
-    ready_status: &'static str,
 }
 
 impl Engine {
-    fn load(
-        model_path: &Path,
-        language: Option<String>,
-        translate: bool,
-        threads: i32,
-    ) -> Result<Engine, String> {
+    fn load(model_path: &Path, threads: i32) -> Result<Engine, String> {
         if !model_path.is_file() {
             return Err(format!("model file not found: {}", model_path.display()));
         }
         let model = transcribe_cpp::Model::load(model_path).map_err(|e| e.to_string())?;
-        // Translation is gated on the model's capabilities: models without it
-        // (e.g. Parakeet) silently keep transcribing, so the setting can stay
-        // on while switching models.
-        let task = if translate && model.capabilities().supports_translate {
-            transcribe_cpp::Task::Translate
-        } else {
-            if translate {
-                log::info!("translate requested but unsupported by this model; transcribing");
-            }
-            transcribe_cpp::Task::Transcribe
-        };
-        // Silently doing something other than what the translate switch says
-        // looks like a bug (still-untranslated subtitles), so say it in the
-        // status. Whisper Turbo is special-cased: it advertises translation
-        // but was distilled without translation data — verified on-device to
-        // keep transcribing German as German with task=Translate.
-        let ready_status = if translate && task == transcribe_cpp::Task::Transcribe {
-            "Ready (this model can't translate)"
-        } else if translate && model.variant().contains("turbo") {
-            "Ready (note: Whisper Turbo translates poorly; use another Whisper)"
-        } else {
-            "Ready"
-        };
-        // Whisper's stock recipe re-decodes a chunk at up to five higher
-        // temperatures when its quality gates fail, so one noisy chunk can
-        // cost several full decodes. For an interactive app a single greedy
-        // pass is the better trade: worst case is a worse line of text, not
-        // a multiplied wait. temperature_inc = 0 turns the retry ladder off;
-        // models that don't take the whisper run extension are unaffected.
-        let run_ext = if model.accepts_ext(
-            transcribe_cpp::ExtSlot::Run,
-            transcribe_cpp::sys::TRANSCRIBE_EXT_KIND_WHISPER_RUN,
-        ) {
-            Some(transcribe_cpp::RunExtension::Whisper(
-                transcribe_cpp::WhisperRunOptions {
-                    temperature_inc: Some(0.0),
-                    ..Default::default()
-                },
-            ))
-        } else {
-            None
-        };
-
-        log::info!(
-            "engine: {} threads, task {:?}, single-pass decode: {}",
-            threads,
-            task,
-            run_ext.is_some()
-        );
+        log::info!("engine: {} threads", threads);
         let options = transcribe_cpp::SessionOptions {
             n_threads: threads,
             ..Default::default()
         };
         let session = model.session_with(&options).map_err(|e| e.to_string())?;
-        Ok(Engine {
-            session,
-            language,
-            task,
-            run_ext,
-            ready_status,
-        })
+        Ok(Engine { session })
     }
 
-    /// Transcribes 16 kHz mono f32 samples to text. Input longer than
-    /// [`MAX_RUN_SAMPLES`] is transcribed in quiet-point chunks.
+    /// Transcribes 16 kHz mono f32 samples to text in one pass. The Nemotron
+    /// streaming model has no context/KV ceiling, so audio of any length is
+    /// processed in a single run.
     pub fn transcribe(&mut self, samples: Vec<f32>) -> Result<String, String> {
-        if samples.len() <= MAX_RUN_SAMPLES {
-            return self.run(&samples);
-        }
-
-        let mut text = String::new();
-        let mut rest: &[f32] = &samples;
-        while !rest.is_empty() {
-            let take = if rest.len() <= MAX_RUN_SAMPLES {
-                rest.len()
-            } else {
-                crate::audio::find_quietest_split(
-                    rest,
-                    MAX_RUN_SAMPLES - SPLIT_SEARCH_SAMPLES,
-                    MAX_RUN_SAMPLES,
-                )
-            };
-            let piece = self.run(&rest[..take])?;
-            let piece = piece.trim();
-            if !piece.is_empty() {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
-                text.push_str(piece);
-            }
-            rest = &rest[take..];
-        }
-        Ok(text)
-    }
-
-    /// One model run. A rejected language hint is degraded instead of
-    /// failing the transcription: `de-DE` retries as `de`, then as no hint
-    /// (each model knows a different set of tags — e.g. Parakeet v3 takes
-    /// locales/short codes, English-only models take none). The degraded
-    /// value is kept so later runs skip the rejected attempts.
-    fn run(&mut self, samples: &[f32]) -> Result<String, String> {
-        loop {
-            let opts = transcribe_cpp::RunOptions {
-                language: self.language.clone(),
-                task: self.task,
-                family: self.run_ext.clone(),
-                ..Default::default()
-            };
-            match self.session.run(samples, &opts) {
-                Ok(t) => return Ok(t.text),
-                Err(transcribe_cpp::Error::Unsupported(msg)) if self.language.is_some() => {
-                    let lang = self.language.take().unwrap();
-                    self.language = lang.split_once('-').map(|(primary, _)| primary.to_string());
-                    log::warn!(
-                        "language hint '{}' rejected ({}); retrying with {:?}",
-                        lang,
-                        msg,
-                        self.language
-                    );
-                }
-                Err(e) => return Err(e.to_string()),
-            }
-        }
+        let opts = transcribe_cpp::RunOptions::default();
+        self.session
+            .run(&samples, &opts)
+            .map(|t| t.text)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -243,9 +104,8 @@ pub fn is_engine_loaded() -> bool {
 }
 
 /// Drops the loaded engine and clears the load state so the next
-/// `ensure_loaded*` call reloads with the current model selection. Waits for
-/// an in-flight load to finish first, so a reload can't race a load of the
-/// previous selection. Call from a background thread.
+/// `ensure_loaded*` call reloads. Waits for an in-flight load to finish
+/// first, so a reload can't race a load. Call from a background thread.
 pub fn reset() {
     let (lock, cvar) = &*LOAD_STATE;
     let mut state = lock.lock().unwrap();
@@ -367,8 +227,8 @@ pub fn ensure_loaded_from_thread(
 /// and any preempted worker stalls the pool at the next op barrier; past
 /// 4 threads the matmuls are memory-bound on phone-class SoCs anyway, and
 /// more threads mainly build up heat. If sysfs is unreadable, falls back
-/// to a conservative 4. The `model_threads` config file (user-settable in
-/// the Models screen) overrides the heuristic.
+/// to a conservative 4. The `model_threads` config file overrides the
+/// heuristic.
 fn performance_core_count() -> i32 {
     let mut freqs: Vec<u64> = Vec::new();
     for i in 0..64 {
@@ -435,8 +295,8 @@ fn read_config(path: &Path) -> Option<String> {
     }
 }
 
-/// Performs the model load: the selected imported GGUF if any (falling back
-/// to the bundled model on failure), otherwise the bundled model.
+/// Performs the model load: the bundled Nemotron GGUF extracted from APK
+/// assets into filesDir.
 fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
     if let Err(msg) = check_cpu_features() {
         notify_status(env, context, &format!("Error: {}", msg));
@@ -448,37 +308,10 @@ fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
         notify_status(env, context, &format!("Error: {}", msg));
         msg
     })?;
-    // Absent/empty or "auto" = no hint (the model's automatic mode). A tag
-    // the model doesn't know is degraded per run — see Engine::run.
-    let language = read_config(&files_dir.join(MODEL_LANGUAGE_FILE))
-        .filter(|l| !l.eq_ignore_ascii_case("auto"));
-    let translate = files_dir.join(MODEL_TRANSLATE_FILE).exists();
     let threads = read_config(&files_dir.join(MODEL_THREADS_FILE))
         .and_then(|s| s.parse::<i32>().ok())
         .filter(|&n| n > 0)
         .unwrap_or_else(performance_core_count);
-
-    if let Some(name) = read_config(&files_dir.join(ACTIVE_MODEL_FILE)) {
-        let path = files_dir.join("models").join(&name);
-        notify_status(env, context, &format!("Loading model {}...", name));
-        match Engine::load(&path, language.clone(), translate, threads) {
-            Ok(engine) => {
-                let status = engine.ready_status;
-                *GLOBAL_ENGINE.lock().unwrap() = Some(Arc::new(Mutex::new(engine)));
-                notify_status(env, context, status);
-                return Ok(());
-            }
-            Err(e) => {
-                log::error!("Imported model {} failed to load: {}", path.display(), e);
-                notify_status(
-                    env,
-                    context,
-                    &format!("Error loading {}: {} — using built-in model", name, e),
-                );
-                // fall through to the bundled model
-            }
-        }
-    }
 
     notify_status(env, context, "Checking assets...");
 
@@ -490,11 +323,10 @@ fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
 
     notify_status(env, context, "Loading model...");
 
-    match Engine::load(&path, language, translate, threads) {
+    match Engine::load(&path, threads) {
         Ok(engine) => {
-            let status = engine.ready_status;
             *GLOBAL_ENGINE.lock().unwrap() = Some(Arc::new(Mutex::new(engine)));
-            notify_status(env, context, status);
+            notify_status(env, context, "Ready");
             Ok(())
         }
         Err(e) => {
