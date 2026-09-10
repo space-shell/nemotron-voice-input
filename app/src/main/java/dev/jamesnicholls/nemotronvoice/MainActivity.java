@@ -1,4 +1,4 @@
-package dev.notune.transcribe;
+package dev.jamesnicholls.nemotronvoice;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;

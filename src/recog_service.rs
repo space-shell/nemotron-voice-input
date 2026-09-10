@@ -97,7 +97,7 @@ fn call_results(env: &mut JNIEnv, obj: &JObject, text: &str) {
 /// Called from `onCreate`. Warms up the model in the background so the first
 /// recognition after a cold bind is as fast as possible.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService_initNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_initNative(
     env: JNIEnv,
     _class: JClass,
     service: JObject,
@@ -123,7 +123,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService
 /// Called from `onStartListening`. Begins microphone capture and arms the
 /// silence-based endpoint monitor.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService_startListening(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_startListening(
     env: JNIEnv,
     _class: JClass,
     service: JObject,
@@ -224,7 +224,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService
 /// Called from `onStopListening`: the keyboard asked us to finish now. Finalise
 /// with whatever we've captured so far.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService_stopListening(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_stopListening(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -236,7 +236,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService
 
 /// Called from `onCancel`: discard everything, return nothing.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService_cancelNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_cancelNative(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -251,11 +251,11 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService
 
 /// Called from `onDestroy`.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_VoiceRecognitionService_destroyNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_destroyNative(
     env: JNIEnv,
     class: JClass,
 ) {
-    Java_dev_notune_transcribe_VoiceRecognitionService_cancelNative(env, class);
+    Java_dev_jamesnicholls_nemotronvoice_VoiceRecognitionService_cancelNative(env, class);
 }
 
 // --- Audio + endpointing ------------------------------------------------------

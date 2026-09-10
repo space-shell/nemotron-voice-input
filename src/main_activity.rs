@@ -23,7 +23,7 @@ fn deliver_benchmark_result(
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_MainActivity_initNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_MainActivity_initNative(
     env: JNIEnv,
     _class: JClass,
     activity: JObject,
@@ -47,7 +47,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_MainActivity_initNative
 /// back with audio seconds vs compute seconds. Engine loading (if it is still
 /// in progress) is waited for but not counted into the measured time.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_MainActivity_benchmarkNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_MainActivity_benchmarkNative(
     mut env: JNIEnv,
     _class: JClass,
     activity: JObject,

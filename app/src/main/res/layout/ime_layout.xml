@@ -41,7 +41,7 @@
         android:clickable="true"
         android:focusable="true">
 
-        <dev.notune.transcribe.MicLevelView
+        <dev.jamesnicholls.nemotronvoice.MicLevelView
             android:id="@+id/ime_mic_level"
             android:layout_width="200dp"
             android:layout_height="200dp"

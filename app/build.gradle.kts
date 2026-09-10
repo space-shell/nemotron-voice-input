@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.notune.transcribe"
+    namespace = "dev.jamesnicholls.nemotronvoice"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.notune.transcribe"
+        applicationId = "dev.jamesnicholls.nemotronvoice"
         minSdk = 26
         targetSdk = 35
         versionCode = 19

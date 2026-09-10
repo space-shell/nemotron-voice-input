@@ -38,7 +38,7 @@ fn notify_text(env: &mut JNIEnv, obj: &JObject, text: &str) {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_TranscribeFileActivity_initNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_TranscribeFileActivity_initNative(
     env: JNIEnv,
     _class: JClass,
     activity: JObject,
@@ -69,7 +69,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_TranscribeFileActivity_
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_TranscribeFileActivity_cleanupNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_TranscribeFileActivity_cleanupNative(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -77,7 +77,7 @@ pub unsafe extern "system" fn Java_dev_notune_transcribe_TranscribeFileActivity_
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_TranscribeFileActivity_transcribeAudio(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_TranscribeFileActivity_transcribeAudio(
     env: JNIEnv,
     _class: JClass,
     samples_array: JFloatArray,

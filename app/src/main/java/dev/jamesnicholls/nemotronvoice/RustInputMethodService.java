@@ -1,4 +1,4 @@
-package dev.notune.transcribe;
+package dev.jamesnicholls.nemotronvoice;
 
 import android.inputmethodservice.InputMethodService;
 import android.view.LayoutInflater;

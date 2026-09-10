@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// drops the current engine and reloads with the new selection, reporting
 /// progress via the activity's `onStatusUpdate` callback.
 #[no_mangle]
-pub unsafe extern "system" fn Java_dev_notune_transcribe_ModelsActivity_reloadModelNative(
+pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_ModelsActivity_reloadModelNative(
     env: JNIEnv,
     _class: JClass,
     activity: JObject,
