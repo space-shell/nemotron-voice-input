@@ -93,6 +93,21 @@ public class MainActivity extends AppCompatActivity {
         // Record-in-background defaults to ON; its marker file is the opt-out.
         bindMarkerSwitch(R.id.switch_record_background, "stop_on_hide", true);
         bindMarkerSwitch(R.id.switch_auto_stop, "auto_stop", false);
+        // Return-to-previous-keyboard after transcription defaults to ON; its
+        // marker file is the opt-out.
+        bindMarkerSwitch(R.id.switch_switch_back, "keep_keyboard_open", true);
+        bindFloatingSwitch();
+
+        // First run: default the floating keyboard ON for tablet-class
+        // screens (the docked full-width slab wastes most of a large display).
+        File initMarker = new File(getFilesDir(), "settings_initialized");
+        if (!initMarker.exists()) {
+            if (getResources().getConfiguration().smallestScreenWidthDp >= 600) {
+                createMarker("floating_keyboard");
+            }
+            createMarker("settings_initialized");
+            bindFloatingSwitch();
+        }
 
         // Live subtitle line limit: 2 (default), 4, or 0 = unlimited.
         RadioGroup subsLinesGroup = findViewById(R.id.rg_subtitle_lines);
@@ -286,15 +301,33 @@ public class MainActivity extends AppCompatActivity {
         sw.setOnCheckedChangeListener((buttonView, isChecked) -> {
             boolean shouldExist = isChecked != inverted;
             if (shouldExist) {
-                try {
-                    marker.createNewFile();
-                } catch (IOException e) {
-                    Log.e(TAG, "Failed to create " + fileName + " file", e);
-                }
+                createMarker(fileName);
             } else {
                 marker.delete();
             }
         });
+    }
+
+    /** The floating-keyboard switch reflects its marker file directly. */
+    private void bindFloatingSwitch() {
+        CompoundButton sw = findViewById(R.id.switch_floating);
+        File marker = new File(getFilesDir(), "floating_keyboard");
+        sw.setChecked(marker.exists());
+        sw.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (isChecked) {
+                createMarker("floating_keyboard");
+            } else {
+                marker.delete();
+            }
+        });
+    }
+
+    private void createMarker(String fileName) {
+        try {
+            new File(getFilesDir(), fileName).createNewFile();
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to create " + fileName + " file", e);
+        }
     }
 
     private void checkAndRequestPermissions() {

@@ -84,6 +84,9 @@ public class RustInputMethodService extends InputMethodService {
     // field via commitText. The engine's committed text only grows, so the
     // delta (committed - committedBase) is what still needs committing.
     private String committedBase = "";
+    // Floating-keyboard state (drag handling).
+    private boolean floatingMode = false;
+    private int floatingWidthPx = 0;
 
     @Override
     public void onCreate() {
@@ -113,13 +116,28 @@ public class RustInputMethodService extends InputMethodService {
             View view = LayoutInflater.from(themed).inflate(R.layout.ime_layout, null);
             inputView = view;
 
-            // Handle window insets for avoiding navigation bar overlap
-            view.setOnApplyWindowInsetsListener((v, insets) -> {
-                int paddingBottom = insets.getSystemWindowInsetBottom();
-                int originalPaddingBottom = v.getPaddingTop();
-                v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), originalPaddingBottom + paddingBottom);
-                return insets;
-            });
+            // Floating keyboard mode: the IME window becomes a movable,
+            // wrap-content panel instead of a docked full-width slab. The
+            // window keeps input focus (the InputConnection is unaffected);
+            // a drag handle repositions it and the position is remembered.
+            floatingMode = isFloatingKeyboardEnabled();
+            View dragHandle = view.findViewById(R.id.ime_drag_handle);
+            if (floatingMode) {
+                dragHandle.setVisibility(View.VISIBLE);
+                applyFloatingWindow();
+                attachDragHandler(dragHandle);
+            }
+
+            // Handle window insets for avoiding navigation bar overlap (only
+            // meaningful when docked — a floating panel isn't edge-attached).
+            if (!floatingMode) {
+                view.setOnApplyWindowInsetsListener((v, insets) -> {
+                    int paddingBottom = insets.getSystemWindowInsetBottom();
+                    int originalPaddingBottom = v.getPaddingTop();
+                    v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), originalPaddingBottom + paddingBottom);
+                    return insets;
+                });
+            }
 
             statusView = view.findViewById(R.id.ime_status_text);
             progressBar = view.findViewById(R.id.ime_progress);
@@ -260,6 +278,27 @@ public class RustInputMethodService extends InputMethodService {
                 }
             });
 
+            // Hold the record button to discard the recording (#66): unlike
+            // stop, cancel abandons the stream without committing text.
+            recordContainer.setOnLongClickListener(v -> {
+                if (!recordContainer.isEnabled() || !isRecording) return false;
+                try {
+                    cancelRecording();
+                } catch (Throwable t) {
+                    Log.w(TAG, "cancelRecording failed", t);
+                }
+                if (pauseAudioActive) {
+                    audioPauser.abandon(this);
+                    pauseAudioActive = false;
+                }
+                committedBase = "";
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) ic.finishComposingText();
+                updateRecordButtonUI(false);
+                if (statusView != null) statusView.setText("Canceled");
+                return true;
+            });
+
             tintRecordButton(false);
             updateUiState();
             return view;
@@ -341,6 +380,11 @@ public class RustInputMethodService extends InputMethodService {
         if (inputView != null
                 && ThemePrefs.isNight(ThemePrefs.wrapForNight(this, ThemePrefs.getMode(this))) != viewIsNight) {
             setInputView(onCreateInputView());
+            // The insets pass has already run for the window, so the rebuilt
+            // view never receives it — request one explicitly or the nav-bar
+            // bottom padding (and with it the bottom key row) is lost
+            // (upstream #99 / PR #100).
+            if (inputView != null) inputView.requestApplyInsets();
         }
         // A field is focused and the input connection is live again — commit any
         // text that finished transcribing while nothing was focused.
@@ -363,7 +407,7 @@ public class RustInputMethodService extends InputMethodService {
         tintRecordButton(recording);
         if (recording) {
             statusView.setText("Listening...");
-            hintView.setText("Tap to Stop");
+            hintView.setText("Tap to Stop · hold to cancel");
         } else {
             statusView.setText("Processing...");
             hintView.setText("Tap to Record");
@@ -545,7 +589,11 @@ public class RustInputMethodService extends InputMethodService {
             }
             updateRecordButtonUI(false);
             if (statusView != null) statusView.setText("Tap to Record");
-            if (pendingSwitchBack) {
+            // After a successful transcription, hand the keyboard back to
+            // whatever the user was typing on before (unless they chose to
+            // keep this keyboard open) — or immediately when they hit the
+            // switch key mid-recording (pendingSwitchBack).
+            if (pendingSwitchBack || isSwitchBackEnabled()) {
                 pendingSwitchBack = false;
                 switchToPreviousInputMethod();
             }
@@ -576,5 +624,78 @@ public class RustInputMethodService extends InputMethodService {
     /** "Record in background" is default ON; the marker file is the opt-out. */
     private boolean isStopOnHideEnabled() {
         return new File(getFilesDir(), "stop_on_hide").exists();
+    }
+
+    /**
+     * Return to the previous keyboard after a successful transcription.
+     * Default ON (the marker file is the opt-out) — the dictation flow most
+     * users want is: speak, text lands, previous keyboard returns.
+     */
+    private boolean isSwitchBackEnabled() {
+        return !new File(getFilesDir(), "keep_keyboard_open").exists();
+    }
+
+    /** Floating-keyboard mode is a plain marker file (default off; the main
+     *  app enables it by default on tablet-class screens at first run). */
+    private boolean isFloatingKeyboardEnabled() {
+        return new File(getFilesDir(), "floating_keyboard").exists();
+    }
+
+    // --- Floating keyboard window -------------------------------------------
+
+    private static final String PREFS_NAME = "ime_prefs";
+    private static final String KEY_FLOAT_X = "float_x";
+    private static final String KEY_FLOAT_Y = "float_y";
+
+    /** Turns the IME window into a wrap-content, positionable panel. */
+    private void applyFloatingWindow() {
+        android.view.Window window = getWindow().getWindow();
+        if (window == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        floatingWidthPx = (int) (340 * density); // ~340dp panel; keys wrap within it
+
+        android.view.WindowManager.LayoutParams lp = window.getAttributes();
+        lp.width = floatingWidthPx;
+        lp.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
+        lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
+        android.content.SharedPreferences prefs =
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        lp.x = prefs.getInt(KEY_FLOAT_X, 16 * (int) density);
+        lp.y = prefs.getInt(KEY_FLOAT_Y, 96 * (int) density);
+        window.setAttributes(lp);
+    }
+
+    /** Drag-to-move for the floating panel: the handle moves the IME window
+     *  and the position is remembered across sessions. */
+    private void attachDragHandler(View dragHandle) {
+        dragHandle.setOnTouchListener((v, event) -> {
+            android.view.Window window = getWindow().getWindow();
+            if (window == null) return false;
+            final android.view.WindowManager.LayoutParams lp = window.getAttributes();
+            switch (event.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    v.setTag(new float[]{event.getRawX(), event.getRawY(), lp.x, lp.y});
+                    return true;
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    float[] start = (float[]) v.getTag();
+                    if (start == null) return true;
+                    lp.x = (int) (start[2] + event.getRawX() - start[0]);
+                    lp.y = (int) (start[3] + event.getRawY() - start[1]);
+                    window.setAttributes(lp);
+                    return true;
+                }
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL: {
+                    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .putInt(KEY_FLOAT_X, lp.x)
+                            .putInt(KEY_FLOAT_Y, lp.y)
+                            .apply();
+                    v.performClick();
+                    return true;
+                }
+            }
+            return false;
+        });
     }
 }

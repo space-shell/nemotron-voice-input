@@ -23,6 +23,10 @@
     <!-- Speech engine (single bundled Nemotron streaming model) -->
     <string name="engine_section">Speech engine</string>
     <string name="engine_desc">Nemotron speech streaming 0.6B (English) runs entirely on-device and streams text live while you speak. No audio ever leaves your device, and no network is used.</string>
+    <string name="setting_switch_back">Return to previous keyboard</string>
+    <string name="setting_switch_back_desc">After a successful transcription, automatically switch back to the keyboard you were using before.</string>
+    <string name="setting_floating">Floating keyboard</string>
+    <string name="setting_floating_desc">Show the voice keyboard as a movable floating panel instead of a docked bar. Drag its handle to reposition; on by default for tablets.</string>
     <string name="status_ready">Ready</string>
     <string name="status_error">Error</string>
     
