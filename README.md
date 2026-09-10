@@ -1,170 +1,74 @@
-# Offline Voice Input (Android)
+# Nemotron Voice Input (Android)
 
-An offline, privacy-focused speech-to-text tool for Android, built with Rust. Tap the microphone on the keyboard you already use — your speech is transcribed entirely on-device and typed into any app. Also includes live subtitles and an optional dedicated voice keyboard.
+Offline, privacy-focused **streaming** speech-to-text for Android, built with
+Rust. Speak into any text field and words appear **live while you speak** —
+transcribed entirely on-device by NVIDIA's Nemotron speech streaming model.
+Fork of [notune/android_transcribe_app](https://github.com/notune/android_transcribe_app)
+("Offline Voice Input"), reworked around true incremental transcription.
 
-[<img src="https://i.ibb.co/q0mdc4Z/get-it-on-github.png"
-alt="Get it on GitHub"
-height="80">](https://github.com/notune/android_transcribe_app/releases/latest)
-[<img src="https://play.google.com/intl/en_us/badges/images/generic/en-play-badge.png"
-alt="Get it on Google Play"
-height="80">](https://play.google.com/store/apps/details?id=dev.notune.transcribe)
+## What changed vs upstream
 
-## Features
-
-- **Voice input in any app:** Tap the microphone on the keyboard you already use (SwiftKey, etc.) or a website's voice search, and your speech is transcribed straight into the text field. The app registers as your device's speech-to-text provider.
-- **100% offline & private:** The Parakeet TDT model runs entirely on-device — no audio ever leaves your phone, and no network is required.
-- **Live Subtitles:** Real-time captions for any audio/video playing on your device.
-- **Optional voice keyboard:** A built-in keyboard you can switch to for voice input wherever you prefer it.
-- **Supported Languages:** Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish, Swedish, Russian, Ukrainian.
-- **Custom models:** Import any [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) GGUF model (Whisper, Nemotron streaming, Canary, more Parakeet variants, …) from a downloaded file — the app stays fully offline; downloads happen in your browser.
-- **Efficient native backend:** All models run through [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (ggml), wrapped in a safe Rust core.
-
-## Screenshots
-
-<p float="left">
-  <img src=".screenshots/screenshot_home.png" width="30%" />
-  <img src=".screenshots/screenshot_recording.png" width="30%" />
-  <img src=".screenshots/screenshot_subtitles.png" width="30%" />
-</p>
+- **Live streaming text**: audio is fed to the model in ~100 ms chunks through
+  transcribe.cpp's cache-aware streaming API (`att_context_right = 1`, ~80 ms
+  lookahead — first text lands ~0.16 s after you start speaking). Stable text
+  is committed to the input field as it firms up; the still-revisable tail
+  shows as the composing region. No more record → wait → paste.
+- **Single model, no model management**: the bundled (and only) model is
+  `nvidia/nemotron-speech-streaming-en-0.6b` (Q8_0, ~700 MB, English, natively
+  cased + punctuated). The model-import screen, language picker and translate
+  toggle are gone.
+- **Streaming everywhere**: the IME, the voice-input popup, the system
+  `RecognitionService` (used by other keyboards via `SpeechRecognizer`, now
+  with `partialResults`), and live subtitles all run on the same pipeline.
+  The old 60 s dictation cap is gone — the streaming model has constant memory.
+- **Return to previous keyboard** after a successful transcription (on by
+  default, toggleable) — closes the loop of "keyboard disappears after
+  dictation" (upstream #63).
+- **Floating keyboard mode**: the voice keyboard becomes a movable panel with
+  a drag handle — on by default for tablet-class screens (upstream request).
+- **Hold-to-cancel**: long-press the record button to discard a dictation
+  (upstream #66), plus the theme-change insets fix (upstream #99 / PR #100).
 
 ## Usage
 
-### Voice input in any app (recommended)
-
-1. Open **Offline Voice Input** once and grant the microphone permission. The home screen shows a **Voice input** status — green when you're ready to go.
-2. In any app, tap the **microphone** on your keyboard (e.g. Microsoft SwiftKey) or the voice-search mic on a website. A compact panel slides up over the app you're in, you speak, and your words are inserted as text. Tap to stop — or enable *Auto-stop after silence* in the app's settings to have it stop by itself.
-
-The app plugs into Android's speech-to-text in **three** ways, so it works with a wide range of keyboards and apps:
+Same integration surface as upstream:
 
 | Path | Who uses it | What happens |
 |---|---|---|
-| **Voice-input popup** (`RECOGNIZE_SPEECH`) | SwiftKey, website voice search, many apps | The compact bottom panel opens over the current app |
-| **System speech service** (`RecognitionService`) | Keyboards/apps using Android's `SpeechRecognizer` | Recognition runs invisibly in the background with automatic endpointing |
-| **Voice keyboard (IME)** | Any keyboard, via the keyboard switcher — also HeliBoard/AnySoftKeyboard-style "switch to voice IME" mic keys | The dedicated voice keyboard opens |
-
-Tap **Try voice input** on the home screen to test the whole flow in one tap.
-
-**Keyboard notes** (mic-key behavior verified against each keyboard's source and tested in the emulator):
-
-- **Microsoft SwiftKey** (not open source) opens the compact voice panel directly, like website voice search does. If SwiftKey's own voice typing opens instead, go to SwiftKey Settings → *Rich input* → turn off **Multi-modal voice typing**.
-- **AnySoftKeyboard** is the open-source way to get the panel: its mic key fires the standard speech intent as long as no *voice keyboard* is enabled on the system. (If one is enabled — ours or Google's — it switches to that instead.)
-- **HeliBoard, FlorisBoard, OpenBoard, Fossify Keyboard, Unexpected Keyboard:** their mic key never opens the panel — it switches to the system *voice input keyboard*. Enable the **Offline Voice Input** keyboard (see below) and it opens automatically; its keyboard-switch key takes you back. **FUTO Keyboard** ships its own built-in voice input.
-- **Gboard:** only uses Google's own voice typing, so it can't hand speech to this app at all.
-- If Android shows a chooser, pick **Offline Voice Input** and tap **Always**. If another app always opens, clear its default in *Settings → Apps*.
-
-### Dedicated voice keyboard (optional)
-
-Prefer voice input as its own keyboard? Enable the **Offline Voice Input** keyboard via *Open Keyboard Settings* on the home screen, switch to it from your keyboard switcher, then tap **Tap to Record**. By default the recording keeps running even if you switch apps or the keyboard closes (turn off *Record in background* in settings if you don't want that) — the text is inserted when you come back.
-
-### Live subtitles
-
-Tap **Start Live Subtitles** and choose *Share entire screen* to get real-time, on-device captions for any audio or video playing on your device.
-
-**Advanced: skip the screen-capture dialog.** Android shows a "Start recording or casting?" consent dialog every time subtitles start. You can pre-approve it once via adb — after that, subtitles start instantly and the setting survives reboots (USB debugging can be turned off again afterwards):
-
-```bash
-adb shell appops set --user 0 dev.notune.transcribe PROJECT_MEDIA allow
-```
-
-To undo it:
-
-```bash
-adb shell appops set --user 0 dev.notune.transcribe PROJECT_MEDIA default
-```
-
-This relies on the undocumented `PROJECT_MEDIA` app-op; on some OEM builds it may not work or may get reset by the system — the normal dialog remains the fallback. The same instructions are shown in-app under *Skip the permission dialog (advanced)*.
-
-### Custom speech models
-
-The built-in Parakeet model works out of the box. Under **Manage speech models** you can additionally import any [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) GGUF model: download a `.gguf` file in your browser (the in-app *Where to get models* dialog lists direct links, e.g. a tiny 135 MB English-only Parakeet, the multilingual Nemotron 3.5 streaming model with punctuation, or Whisper large-v3-turbo), then import it via the system file picker and select it. The app itself needs no internet permission — model files are simply copied into the app's private storage. An optional language hint (e.g. `en-US`, or `auto`) can be set for imported models.
-
-## Prerequisites
-
-| Dependency | Installation |
-|---|---|
-| **JDK 17** | Android Studio (bundled) or `sudo pacman -S jdk17-openjdk` |
-| **Android SDK** | Via Android Studio or `sdkmanager` |
-| **Android NDK** | `sdkmanager "ndk;28.0.13004108"` |
-| **Rust** | [rustup.rs](https://rustup.rs) + `rustup target add aarch64-linux-android` |
-| **cargo-ndk** | `cargo install cargo-ndk` |
-
-### Local Configuration
-
-Create a `local.properties` file in the project root (this file is gitignored):
-
-```properties
-sdk.dir=/path/to/your/Android/Sdk
-```
-
-If your default Java is not JDK 17, uncomment and set `org.gradle.java.home` in `gradle.properties`:
-
-```properties
-org.gradle.java.home=/path/to/jdk17
-# Examples:
-#   /opt/android-studio/jbr          (Android Studio bundled JBR)
-#   /usr/lib/jvm/java-17-openjdk     (System JDK 17)
-```
+| **Voice-input popup** (`RECOGNIZE_SPEECH`) | SwiftKey, website voice search | Compact panel with live text over the current app |
+| **System speech service** (`RecognitionService`) | Keyboards/apps using `SpeechRecognizer` | Streaming recognition in the background with partial results |
+| **Voice keyboard (IME)** | Any keyboard switcher | Dedicated streaming voice keyboard |
 
 ## Building
 
-### Debug APK
+Everything needed is in the Nix flake (JDK 17, Android SDK 35 + NDK 28,
+Rust with the `aarch64-linux-android` target, cargo-ndk, cmake):
+
 ```bash
-./gradlew assembleDebug
+nix develop -c ./gradlew assembleDebug
 # Output: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### Release APK
-```bash
-./gradlew assembleRelease
-# Output: app/build/outputs/apk/release/app-release.apk
-```
+The first build downloads the ~700 MB Nemotron GGUF from Hugging Face and
+cross-compiles Rust + ggml (~5–10 min). Release builds expect
+`release.keystore` in the project root and `KEY_ALIAS` / `KEY_PASS` /
+`STORE_PASS` in the environment.
 
-### Release AAB (Google Play)
-```bash
-./gradlew bundleRelease
-# Output: app/build/outputs/bundle/release/app-release.aab
-```
+Without Nix you need: JDK 17, Android SDK + NDK 28.0.13004108, Rust +
+`aarch64-linux-android` target, `cargo install cargo-ndk`, cmake.
 
-### Signing
+## Project structure
 
-For release builds, place a `release.keystore` in the project root and set these environment variables:
+- `src/` — Rust core (cdylib): engine, streaming voice session, JNI bridges
+- `app/src/main/java/dev/jamesnicholls/nemotronvoice/` — Android Java
+- `model_assets/` — Play Asset Delivery pack for the bundled GGUF
+- Transcription runs through
+  [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (MIT).
 
-```bash
-export KEY_ALIAS=release
-export KEY_PASS=yourpassword
-export STORE_PASS=yourpassword
-```
+## Licenses & attribution
 
-### Model Assets
-
-The built-in Parakeet TDT GGUF model (~485 MB) is automatically downloaded from HuggingFace during the first build via a Gradle task. The checksum is verified with SHA-256. No manual download is needed.
-
-## Project Structure
-
-```
-├── app/
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── java/dev/notune/transcribe/   # Android Java code
-│       ├── res/                          # Resources (layouts, drawables, etc.)
-│       ├── assets/                       # Model files (downloaded at build time)
-│       └── jniLibs/                      # Native .so files (built by cargo-ndk)
-├── src/                                  # Rust source code (cdylib)
-├── Cargo.toml                            # Rust crate manifest
-├── build.gradle.kts                      # Root Gradle config
-├── app/build.gradle.kts                  # App module config (AGP 8.7.3)
-├── settings.gradle.kts
-├── gradle.properties
-└── fastlane/metadata/android/            # F-Droid metadata
-```
-
-## Acknowledgments
-
-- **Speech Model:** [Parakeet TDT 0.6b v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) by NVIDIA.
-    - GGUF conversion by [handy-computer](https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf).
-    - Licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-- **Inference Backend:** [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) by CJ Pais / Handy Computer.
-
-## License
-
-[MIT](LICENSE)
+- App code: MIT (© notune, modifications © this fork)
+- [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp): MIT
+- Model: [`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  — [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
+  (GGUF conversion by [handy-computer](https://huggingface.co/handy-computer))

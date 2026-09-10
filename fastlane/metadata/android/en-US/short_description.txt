@@ -1,1 +1,1 @@
-Private, offline speech-to-text keyboard powered by AI
+Offline streaming voice input powered by Nemotron
