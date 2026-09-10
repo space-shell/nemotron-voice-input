@@ -166,12 +166,14 @@ data class ModelFile(val name: String, val sha256: String)
 
 // The bundled GGUF goes into the model_assets asset pack so the base module
 // stays under the Play Store 200 MB compressed-download limit.
+// nemotron-speech-streaming-en-0.6b: English, natively punctuated+cased,
+// cache-aware streaming FastConformer RNN-T (NVIDIA Open Model License).
 val modelPackFiles = listOf(
-    ModelFile("parakeet-tdt-0.6b-v3-Q4_K_M.gguf",
-        "b68557be1e3c40207fd7c4bd9d63f1d3316b963f15325bfb0cc16a8bb0ffd181"),
+    ModelFile("nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
+        "90d8c89714cd31efc88be62a40c6b2bea57e0cc2063af1ffe2c28f1a228ca110"),
 )
 
-val huggingFaceRepo = "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/main"
+val huggingFaceRepo = "https://huggingface.co/handy-computer/nemotron-speech-streaming-en-0.6b-gguf/resolve/main"
 
 fun downloadToDir(assetsDir: File, files: List<ModelFile>) {
     assetsDir.mkdirs()
