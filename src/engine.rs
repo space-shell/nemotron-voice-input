@@ -18,9 +18,17 @@ use crate::assets;
 /// Absent/invalid/0 = default (performance-core heuristic).
 const MODEL_THREADS_FILE: &str = "model_threads";
 
-/// A loaded transcribe.cpp session.
+/// A loaded transcribe.cpp model plus the batch session used by one-shot
+/// transcription (benchmark, subtitles, file transcription). Streaming runs
+/// get their own session via [`Engine::stream_session`]: `transcribe_cpp`
+/// streams mutably borrow their session, and a session is `Send`, so handing
+/// out per-run sessions keeps the stream owned by its consumer thread without
+/// holding the shared-engine mutex for the stream's lifetime. The bindings'
+/// per-model compute lease still serializes native compute across sessions.
 pub struct Engine {
+    model: transcribe_cpp::Model,
     session: transcribe_cpp::Session,
+    session_options: transcribe_cpp::SessionOptions,
 }
 
 impl Engine {
@@ -30,12 +38,18 @@ impl Engine {
         }
         let model = transcribe_cpp::Model::load(model_path).map_err(|e| e.to_string())?;
         log::info!("engine: {} threads", threads);
-        let options = transcribe_cpp::SessionOptions {
+        let session_options = transcribe_cpp::SessionOptions {
             n_threads: threads,
             ..Default::default()
         };
-        let session = model.session_with(&options).map_err(|e| e.to_string())?;
-        Ok(Engine { session })
+        let session = model
+            .session_with(&session_options)
+            .map_err(|e| e.to_string())?;
+        Ok(Engine {
+            model,
+            session,
+            session_options,
+        })
     }
 
     /// Transcribes 16 kHz mono f32 samples to text in one pass. The Nemotron
@@ -46,6 +60,16 @@ impl Engine {
         self.session
             .run(&samples, &opts)
             .map(|t| t.text)
+            .map_err(|e| e.to_string())
+    }
+
+    /// A fresh session for a streaming run, to be owned (and used) by one
+    /// thread. While a stream on it is active, batch `run`s on other sessions
+    /// of the same model fail with `Busy` — the C library permits one
+    /// in-flight compute per model.
+    pub fn stream_session(&self) -> Result<transcribe_cpp::Session, String> {
+        self.model
+            .session_with(&self.session_options)
             .map_err(|e| e.to_string())
     }
 }
