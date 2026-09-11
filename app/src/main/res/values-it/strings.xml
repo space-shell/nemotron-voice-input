@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Immissione vocale e sottotitoli</string>
+    <string name="welcome_title">Immissione vocale</string>
     <string name="welcome_subtitle">Completamente offline, privato e veloce.</string>
 
     <string name="section_ime">Alternativa: tastiera vocale</string>
     <string name="desc_ime">Preferisci una tastiera dedicata? Attiva la tastiera Nemotron Voice Input, poi passa a essa dal selettore delle tastiere quando vuoi l\'immissione vocale come tastiera a sé.</string>
     <string name="btn_ime_settings">Apri impostazioni tastiera</string>
 
-    <string name="section_subs">Sottotitoli in tempo reale</string>
-    <string name="desc_subs">Mostra i sottotitoli per qualsiasi audio riprodotto sul dispositivo. Dopo l\'avvio, scegli \'Condividi tutto lo schermo\' per risultati migliori.</string>
-    <string name="btn_subs_start">Avvia sottotitoli in tempo reale</string>
-    <string name="btn_subs_advanced">Salta la finestra di autorizzazione (avanzato)</string>
-    <string name="subs_advanced_title">Salta la finestra di cattura schermo</string>
-    <string name="subs_advanced_body">Android mostra di solito una finestra «Avviare registrazione o trasmissione?» a ogni avvio dei sottotitoli. Gli utenti esperti possono approvarla una volta tramite adb; poi i sottotitoli si avviano all\'istante:\n\n1. Attiva le opzioni sviluppatore e il debug USB, e collega il dispositivo a un computer con adb.\n\n2. Esegui:\n\n%1$s\n\nEcco fatto: l\'impostazione sopravvive ai riavvii e il debug USB può poi essere disattivato. L\'app in sé non cambia: Android concede semplicemente la finestra automaticamente.\n\nPer annullare:\n\n%2$s\n\nNota: ciò si basa su un comportamento non documentato di Android (l\'app-op PROJECT_MEDIA). Su alcuni dispositivi (es. certe versioni Xiaomi/Samsung) potrebbe non funzionare o essere reimpostato dal sistema; la finestra normale resta sempre il ripiego.</string>
-    <string name="subs_advanced_copy">Copia comando</string>
-    <string name="subs_advanced_copied">Comando copiato</string>
 
     <string name="status_label">Stato:</string>
     <string name="status_checking">Verifica dei dati…</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Arresto automatico dopo il silenzio</string>
     <string name="setting_auto_stop_desc">Chiudi la finestra di immissione vocale automaticamente ~2 secondi dopo la fine del parlato</string>
 
-    <string name="setting_subtitle_lines">Lunghezza sottotitoli</string>
-    <string name="setting_subtitle_lines_desc">Quante righe mostrano i sottotitoli in tempo reale; il testo più vecchio scorre via</string>
-    <string name="subtitle_lines_2">2 righe</string>
-    <string name="subtitle_lines_4">4 righe</string>
-    <string name="subtitle_lines_all">Tutte</string>
 
 
     <string name="section_benchmark">Benchmark</string>

@@ -17,9 +17,9 @@ Fork of [notune/android_transcribe_app](https://github.com/notune/android_transc
   `nvidia/nemotron-speech-streaming-en-0.6b` (Q8_0, ~700 MB, English, natively
   cased + punctuated). The model-import screen, language picker and translate
   toggle are gone.
-- **Streaming everywhere**: the IME, the voice-input popup, the system
+- **Streaming everywhere**: the IME, the voice-input popup, and the system
   `RecognitionService` (used by other keyboards via `SpeechRecognizer`, now
-  with `partialResults`), and live subtitles all run on the same pipeline.
+  with `partialResults`) all run on the same pipeline.
   The old 60 s dictation cap is gone — the streaming model has constant memory.
 - **Return to previous keyboard** after a successful transcription (on by
   default, toggleable) — closes the loop of "keyboard disappears after

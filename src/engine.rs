@@ -19,7 +19,7 @@ use crate::assets;
 const MODEL_THREADS_FILE: &str = "model_threads";
 
 /// A loaded transcribe.cpp model plus the batch session used by one-shot
-/// transcription (benchmark, subtitles, file transcription). Streaming runs
+/// transcription (benchmark, file transcription). Streaming runs
 /// get their own session via [`Engine::stream_session`]: `transcribe_cpp`
 /// streams mutably borrow their session, and a session is `Send`, so handing
 /// out per-run sessions keeps the stream owned by its consumer thread without

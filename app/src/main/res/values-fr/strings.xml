@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Saisie vocale &amp; sous-titres</string>
+    <string name="welcome_title">Saisie vocale</string>
     <string name="welcome_subtitle">Entièrement hors ligne, privé et rapide.</string>
 
     <string name="section_ime">Alternative : clavier vocal</string>
     <string name="desc_ime">Vous préférez un clavier dédié ? Activez le clavier Nemotron Voice Input, puis passez-y depuis le sélecteur de clavier quand vous voulez la saisie vocale comme clavier à part entière.</string>
     <string name="btn_ime_settings">Ouvrir les paramètres du clavier</string>
 
-    <string name="section_subs">Sous-titres en direct</string>
-    <string name="desc_subs">Affichez des sous-titres pour tout audio lu sur votre appareil. Après le démarrage, choisissez \'Partager tout l\'écran\' pour de meilleurs résultats.</string>
-    <string name="btn_subs_start">Démarrer les sous-titres en direct</string>
-    <string name="btn_subs_advanced">Ignorer la boîte de dialogue d\'autorisation (avancé)</string>
-    <string name="subs_advanced_title">Ignorer la boîte de dialogue de capture d\'écran</string>
-    <string name="subs_advanced_body">Android affiche normalement une boîte de dialogue « Démarrer l\'enregistrement ou la diffusion ? » à chaque démarrage des sous-titres. Les utilisateurs avancés peuvent l\'approuver une fois pour toutes via adb ; ensuite les sous-titres démarrent instantanément :\n\n1. Activez les options pour développeurs et le débogage USB, puis connectez votre appareil à un ordinateur avec adb.\n\n2. Exécutez :\n\n%1$s\n\nC\'est tout : le réglage survit aux redémarrages, et le débogage USB peut ensuite être désactivé. L\'application ne change pas : Android accorde simplement la boîte de dialogue automatiquement.\n\nPour annuler :\n\n%2$s\n\nRemarque : ceci repose sur un comportement non documenté d\'Android (l\'app-op PROJECT_MEDIA). Sur certains appareils (p. ex. certaines versions Xiaomi/Samsung), cela peut ne pas fonctionner ou être réinitialisé par le système ; la boîte de dialogue normale reste toujours le repli.</string>
-    <string name="subs_advanced_copy">Copier la commande</string>
-    <string name="subs_advanced_copied">Commande copiée</string>
 
     <string name="status_label">État :</string>
     <string name="status_checking">Vérification des données…</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Arrêt automatique après un silence</string>
     <string name="setting_auto_stop_desc">Fermer automatiquement la fenêtre de saisie vocale ~2 secondes après la fin de la parole</string>
 
-    <string name="setting_subtitle_lines">Longueur des sous-titres</string>
-    <string name="setting_subtitle_lines_desc">Nombre de lignes affichées par les sous-titres en direct ; le texte plus ancien défile</string>
-    <string name="subtitle_lines_2">2 lignes</string>
-    <string name="subtitle_lines_4">4 lignes</string>
-    <string name="subtitle_lines_all">Toutes</string>
 
 
     <string name="section_benchmark">Test de performance</string>

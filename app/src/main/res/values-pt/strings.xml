@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Entrada de voz e legendas</string>
+    <string name="welcome_title">Entrada de voz</string>
     <string name="welcome_subtitle">Totalmente offline, privado e rápido.</string>
 
     <string name="section_ime">Alternativa: teclado de voz</string>
     <string name="desc_ime">Prefere um teclado dedicado? Ative o teclado Nemotron Voice Input e alterne para ele no seletor de teclados quando quiser a entrada de voz como teclado próprio.</string>
     <string name="btn_ime_settings">Abrir configurações do teclado</string>
 
-    <string name="section_subs">Legendas ao vivo</string>
-    <string name="desc_subs">Exiba legendas para qualquer áudio reproduzido no seu dispositivo. Após iniciar, escolha \'Compartilhar a tela inteira\' para melhores resultados.</string>
-    <string name="btn_subs_start">Iniciar legendas ao vivo</string>
-    <string name="btn_subs_advanced">Pular a caixa de permissão (avançado)</string>
-    <string name="subs_advanced_title">Pular a caixa de captura de tela</string>
-    <string name="subs_advanced_body">O Android normalmente mostra uma caixa «Iniciar gravação ou transmissão?» sempre que as legendas iniciam. Usuários avançados podem aprová-la uma vez via adb; depois as legendas iniciam instantaneamente:\n\n1. Ative as opções do desenvolvedor e a depuração USB, e conecte o dispositivo a um computador com adb.\n\n2. Execute:\n\n%1$s\n\nPronto: a configuração sobrevive a reinicializações, e a depuração USB pode ser desativada depois. O app em si não muda: o Android apenas concede a caixa automaticamente.\n\nPara desfazer:\n\n%2$s\n\nObservação: isto depende de um comportamento não documentado do Android (o app-op PROJECT_MEDIA). Em alguns dispositivos (por exemplo, certas versões Xiaomi/Samsung) pode não funcionar ou ser redefinido pelo sistema; a caixa normal é sempre o recurso alternativo.</string>
-    <string name="subs_advanced_copy">Copiar comando</string>
-    <string name="subs_advanced_copied">Comando copiado</string>
 
     <string name="status_label">Status:</string>
     <string name="status_checking">Verificando dados…</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Parada automática após silêncio</string>
     <string name="setting_auto_stop_desc">Fechar a janela de entrada de voz automaticamente ~2 segundos após você parar de falar</string>
 
-    <string name="setting_subtitle_lines">Comprimento das legendas</string>
-    <string name="setting_subtitle_lines_desc">Quantas linhas as legendas ao vivo mostram; o texto mais antigo rola para fora</string>
-    <string name="subtitle_lines_2">2 linhas</string>
-    <string name="subtitle_lines_4">4 linhas</string>
-    <string name="subtitle_lines_all">Todas</string>
 
 
     <string name="section_benchmark">Teste de desempenho</string>

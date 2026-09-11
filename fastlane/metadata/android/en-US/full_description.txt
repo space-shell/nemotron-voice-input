@@ -4,9 +4,6 @@ VOICE TYPING IN ANY APP
 Tap the microphone on a compatible keyboard — such as Microsoft SwiftKey — or a website's voice-search button, and Offline Voice Input transcribes your speech straight into the text field. It registers as your device's speech-to-text provider.
 Note: some keyboards (such as Gboard) only use Google's own voice typing and can't pass speech to other apps. If yours does, switch to a keyboard like SwiftKey — or simply use the built-in voice keyboard described below, which always works.
 
-LIVE SUBTITLES
-Get real-time, on-device captions for any audio or video playing on your phone — videos, podcasts, meetings and more.
-
 TRANSCRIBE AUDIO FILES
 Share an audio file to Offline Voice Input (or open it with the app) to turn the recording into text.
 
