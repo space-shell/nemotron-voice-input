@@ -126,6 +126,10 @@ public class RustInputMethodService extends InputMethodService {
                 dragHandle.setVisibility(View.VISIBLE);
                 applyFloatingWindow();
                 attachDragHandler(dragHandle);
+            } else {
+                // Reset any layout params a previous floating session left on
+                // the window (gravity/x/y survive view rebuilds).
+                applyDockedWindow();
             }
 
             // Handle window insets for avoiding navigation bar overlap (only
@@ -313,6 +317,10 @@ public class RustInputMethodService extends InputMethodService {
     @Override
     public void onWindowShown() {
         super.onWindowShown();
+        // The framework resets the IME window to MATCH_PARENT x WRAP_CONTENT
+        // on show transitions (InputMethodService#onConfigureWindow); the
+        // floating params must be re-applied or the panel renders wrong.
+        if (floatingMode) applyFloatingWindow();
         boolean wasVisible = windowVisible;
         windowVisible = true;
         if (isRecording) {
@@ -384,6 +392,13 @@ public class RustInputMethodService extends InputMethodService {
             // view never receives it — request one explicitly or the nav-bar
             // bottom padding (and with it the bottom key row) is lost
             // (upstream #99 / PR #100).
+            if (inputView != null) inputView.requestApplyInsets();
+        }
+        // The floating marker can be toggled in the main app while this IME
+        // process stays alive; the marker is otherwise only read when the
+        // input view is (re)created. Rebuild so the toggle takes effect.
+        if (isFloatingKeyboardEnabled() != floatingMode) {
+            setInputView(onCreateInputView());
             if (inputView != null) inputView.requestApplyInsets();
         }
         // A field is focused and the input connection is live again — commit any
@@ -647,26 +662,100 @@ public class RustInputMethodService extends InputMethodService {
     private static final String KEY_FLOAT_X = "float_x";
     private static final String KEY_FLOAT_Y = "float_y";
 
-    /** Turns the IME window into a wrap-content, positionable panel. */
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** Bounds of the display the IME window is on (rotation-aware). */
+    private android.graphics.Rect displayBounds() {
+        android.graphics.Rect r = new android.graphics.Rect();
+        Object wm = getSystemService(Context.WINDOW_SERVICE);
+        if (wm instanceof android.view.WindowManager) {
+            android.view.WindowManager wmm = (android.view.WindowManager) wm;
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                r.set(wmm.getCurrentWindowMetrics().getBounds());
+            } else {
+                android.graphics.Point p = new android.graphics.Point();
+                wmm.getDefaultDisplay().getRealSize(p);
+                r.set(0, 0, p.x, p.y);
+            }
+        }
+        if (r.isEmpty()) {
+            r.set(0, 0, getResources().getDisplayMetrics().widthPixels,
+                    getResources().getDisplayMetrics().heightPixels);
+        }
+        return r;
+    }
+
+    /** Panel height for clamping: the measured view once laid out, else an
+     *  estimate (half the display) so the first show is still on-screen. */
+    private int floatingPanelHeight() {
+        if (inputView != null && inputView.getHeight() > 0) return inputView.getHeight();
+        return Math.max(1, displayBounds().height() / 2);
+    }
+
+    /**
+     * The framework lays the IME window out through here on show and
+     * fullscreen-mode transitions; the default forces MATCH_PARENT x
+     * WRAP_CONTENT, which clobbers the floating geometry. Route both modes
+     * through our own params instead.
+     */
+    @Override
+    public void onConfigureWindow(android.view.Window win, boolean isFullscreen,
+            boolean isCandidatesOnly) {
+        if (floatingMode) {
+            applyFloatingWindow();
+        } else {
+            applyDockedWindow();
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Rotation changed the display bounds; re-clamp the saved position.
+        if (floatingMode) applyFloatingWindow();
+    }
+
+    /** Turns the IME window into a wrap-content, positionable panel. The
+     *  restored position is clamped so the panel is always fully on-screen. */
     private void applyFloatingWindow() {
         android.view.Window window = getWindow().getWindow();
         if (window == null) return;
         float density = getResources().getDisplayMetrics().density;
+        android.graphics.Rect bounds = displayBounds();
         floatingWidthPx = (int) (340 * density); // ~340dp panel; keys wrap within it
+        if (floatingWidthPx > bounds.width()) floatingWidthPx = bounds.width();
 
+        android.content.SharedPreferences prefs =
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         android.view.WindowManager.LayoutParams lp = window.getAttributes();
         lp.width = floatingWidthPx;
         lp.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
         lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
-        android.content.SharedPreferences prefs =
-                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        lp.x = prefs.getInt(KEY_FLOAT_X, 16 * (int) density);
-        lp.y = prefs.getInt(KEY_FLOAT_Y, 96 * (int) density);
+        lp.x = clamp(prefs.getInt(KEY_FLOAT_X, 16 * (int) density),
+                0, Math.max(0, bounds.width() - floatingWidthPx));
+        lp.y = clamp(prefs.getInt(KEY_FLOAT_Y, 96 * (int) density),
+                0, Math.max(0, bounds.height() - floatingPanelHeight()));
         window.setAttributes(lp);
     }
 
-    /** Drag-to-move for the floating panel: the handle moves the IME window
-     *  and the position is remembered across sessions. */
+    /** Docked slab: full width at the bottom, no offsets. */
+    private void applyDockedWindow() {
+        android.view.Window window = getWindow().getWindow();
+        if (window == null) return;
+        android.view.WindowManager.LayoutParams lp = window.getAttributes();
+        lp.width = android.view.WindowManager.LayoutParams.MATCH_PARENT;
+        lp.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
+        lp.gravity = android.view.Gravity.BOTTOM;
+        lp.x = 0;
+        lp.y = 0;
+        window.setAttributes(lp);
+    }
+
+    /** Drag-to-move for the floating panel: the handle moves the IME window,
+     *  the position stays clamped on-screen, and it is remembered across
+     *  sessions. */
     private void attachDragHandler(View dragHandle) {
         dragHandle.setOnTouchListener((v, event) -> {
             android.view.Window window = getWindow().getWindow();
@@ -679,8 +768,11 @@ public class RustInputMethodService extends InputMethodService {
                 case android.view.MotionEvent.ACTION_MOVE: {
                     float[] start = (float[]) v.getTag();
                     if (start == null) return true;
-                    lp.x = (int) (start[2] + event.getRawX() - start[0]);
-                    lp.y = (int) (start[3] + event.getRawY() - start[1]);
+                    android.graphics.Rect bounds = displayBounds();
+                    lp.x = clamp((int) (start[2] + event.getRawX() - start[0]),
+                            0, Math.max(0, bounds.width() - floatingWidthPx));
+                    lp.y = clamp((int) (start[3] + event.getRawY() - start[1]),
+                            0, Math.max(0, bounds.height() - floatingPanelHeight()));
                     window.setAttributes(lp);
                     return true;
                 }
