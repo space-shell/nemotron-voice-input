@@ -17,17 +17,17 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Set up JDK 17
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-
-    - name: Install Android NDK
+    # ubuntu-latest ships a preinstalled, license-accepted Android SDK at
+    # $ANDROID_HOME with sdkmanager on PATH; only the pinned NDK and the
+    # exact platform/build-tools need installing.
+    - name: Install Android SDK components
       run: |
-        sdkmanager --install "ndk;28.0.13004108"
+        sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.0.13004108"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.0.13004108" >> $GITHUB_ENV
 
     - name: Setup Rust
