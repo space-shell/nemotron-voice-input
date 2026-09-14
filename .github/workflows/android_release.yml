@@ -22,11 +22,28 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # ubuntu-latest ships a preinstalled, license-accepted Android SDK at
-    # $ANDROID_HOME with sdkmanager on PATH; only the pinned NDK and the
-    # exact platform/build-tools need installing.
+    # ubuntu-latest no longer ships a usable Android SDK; install
+    # command-line tools ourselves and pin every component.
+    - name: Cache Android SDK
+      uses: actions/cache@v4
+      with:
+        path: ~/android-sdk
+        key: android-sdk-35-bt35-ndk28.0.13004108
+
+    - name: Install Android command-line tools
+      run: |
+        if [ ! -d "$HOME/android-sdk/cmdline-tools/latest" ]; then
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/clt.zip
+          unzip -q /tmp/clt.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+        fi
+        echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+        echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
     - name: Install Android SDK components
       run: |
+        yes | sdkmanager --licenses > /dev/null || true
         sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.0.13004108"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.0.13004108" >> $GITHUB_ENV
 
