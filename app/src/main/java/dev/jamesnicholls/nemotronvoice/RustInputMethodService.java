@@ -51,6 +51,9 @@ public class RustInputMethodService extends InputMethodService {
     // Night flag the current input view was inflated with, so it can be rebuilt
     // if the theme preference changes while this process stays alive.
     private boolean viewIsNight = false;
+    // Switch-back flag the current input view was inflated with (minimal key
+    // row); rebuilt like viewIsNight when the setting changes in-app.
+    private boolean viewIsMinimal = false;
     private Handler mainHandler;
     private boolean isRecording = false;
     private boolean pendingSwitchBack = false;
@@ -154,6 +157,18 @@ public class RustInputMethodService extends InputMethodService {
             spaceButton = view.findViewById(R.id.ime_space);
             enterButton = view.findViewById(R.id.ime_enter);
             switchKeyboardButton = view.findViewById(R.id.ime_switch_keyboard);
+
+            // Minimal mode (auto return to previous keyboard, the default):
+            // the editing keys and bottom hint are never reached — the
+            // keyboard closes as soon as dictation ends — so show only the
+            // switch-back key.
+            viewIsMinimal = isSwitchBackEnabled();
+            if (viewIsMinimal) {
+                backspaceButton.setVisibility(View.GONE);
+                spaceButton.setVisibility(View.GONE);
+                enterButton.setVisibility(View.GONE);
+                hintView.setVisibility(View.GONE);
+            }
 
             switchKeyboardButton.setOnClickListener(v -> {
                 if (isRecording) {
@@ -300,6 +315,13 @@ public class RustInputMethodService extends InputMethodService {
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
                 if (statusView != null) statusView.setText("Canceled");
+                // A canceled dictation also ends the session: with auto
+                // switch-back, hand the keyboard back instead of stranding
+                // the user on a text-less voice keyboard.
+                if (pendingSwitchBack || isSwitchBackEnabled()) {
+                    pendingSwitchBack = false;
+                    switchToPreviousInputMethod();
+                }
                 return true;
             });
 
@@ -394,10 +416,12 @@ public class RustInputMethodService extends InputMethodService {
             // (upstream #99 / PR #100).
             if (inputView != null) inputView.requestApplyInsets();
         }
-        // The floating marker can be toggled in the main app while this IME
-        // process stays alive; the marker is otherwise only read when the
-        // input view is (re)created. Rebuild so the toggle takes effect.
-        if (isFloatingKeyboardEnabled() != floatingMode) {
+        // The floating / minimal-keyboard markers can be toggled in the main
+        // app while this IME process stays alive; they are otherwise only
+        // read when the input view is (re)created. Rebuild so the toggle
+        // takes effect.
+        if (isFloatingKeyboardEnabled() != floatingMode
+                || isSwitchBackEnabled() != viewIsMinimal) {
             setInputView(onCreateInputView());
             if (inputView != null) inputView.requestApplyInsets();
         }
@@ -559,7 +583,9 @@ public class RustInputMethodService extends InputMethodService {
                     audioPauser.abandon(this);
                     pauseAudioActive = false;
                 }
-                if (pendingSwitchBack) {
+                if (pendingSwitchBack || isSwitchBackEnabled()) {
+                    // Nothing recognized still counts as "dictation ended":
+                    // with auto switch-back, return to the previous keyboard.
                     pendingSwitchBack = false;
                     switchToPreviousInputMethod();
                 }
