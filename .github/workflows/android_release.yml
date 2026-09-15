@@ -162,21 +162,21 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: nemotron_voice_input_v${{ env.VERSION_NAME }}-apk
-        path: nemotron_voice_input_v${VERSION_NAME}.apk
+        path: nemotron_voice_input_v${{ env.VERSION_NAME }}.apk
 
     - name: Upload AAB Artifact
       if: startsWith(github.ref, 'refs/tags/')
       uses: actions/upload-artifact@v4
       with:
         name: nemotron_voice_input_v${{ env.VERSION_NAME }}-aab
-        path: nemotron_voice_input_v${VERSION_NAME}.aab
+        path: nemotron_voice_input_v${{ env.VERSION_NAME }}.aab
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: Release v${{ env.VERSION_NAME }}
         body_path: release_notes.md
         files: |
-          nemotron_voice_input_v${VERSION_NAME}.apk
-          nemotron_voice_input_v${VERSION_NAME}.aab
+          nemotron_voice_input_v${{ env.VERSION_NAME }}.apk
+          nemotron_voice_input_v${{ env.VERSION_NAME }}.aab
