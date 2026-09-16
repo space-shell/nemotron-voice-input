@@ -56,6 +56,14 @@ public class RustInputMethodService extends InputMethodService {
     private boolean viewIsMinimal = false;
     private Handler mainHandler;
     private boolean isRecording = false;
+    // Mirrored from the Rust engine's status callbacks: true once the model
+    // has finished loading ("Ready"). Recording before this is what made
+    // cold starts lose audio (the consumer waits for the load while the
+    // bounded audio channel overflows).
+    private boolean modelReady = false;
+    // Auto-record requested while the model was still loading; fires once
+    // "Ready" arrives (and the window is still shown).
+    private boolean pendingAutoStart = false;
     private boolean pendingSwitchBack = false;
     private String lastStatus = "Initializing...";
     // Key repeat settings
@@ -288,12 +296,17 @@ public class RustInputMethodService extends InputMethodService {
                     }
                     updateRecordButtonUI(false);
                 } else {
-                    if (isPauseAudioEnabled()) {
-                        audioPauser.request(this);
-                        pauseAudioActive = true;
+                    if (!modelReady) {
+                        // Still loading — ignore the tap (the button should
+                        // be disabled, this guards against a stale tap in
+                        // flight). After a load *error* the tap is a retry:
+                        // fall through and let the consumer re-load.
+                        if (!lastStatus.startsWith("Error")) {
+                            updateUiState();
+                            return;
+                        }
                     }
-                    startRecording();
-                    updateRecordButtonUI(true);
+                    beginRecording();
                 }
             });
 
@@ -359,12 +372,15 @@ public class RustInputMethodService extends InputMethodService {
         if (new File(getFilesDir(), "auto_record").exists()) {
             if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {
-                if (isPauseAudioEnabled()) {
-                    audioPauser.request(this);
-                    pauseAudioActive = true;
+                if (!modelReady) {
+                    // Model still loading: defer the auto-start until the
+                    // engine reports Ready, or the buffered audio overflows
+                    // and the recording is discarded.
+                    pendingAutoStart = true;
+                    updateUiState();
+                    return;
                 }
-                startRecording();
-                updateRecordButtonUI(true);
+                beginRecording();
             }
         }
     }
@@ -373,6 +389,7 @@ public class RustInputMethodService extends InputMethodService {
     public void onWindowHidden() {
         super.onWindowHidden();
         windowVisible = false;
+        pendingAutoStart = false;
         if (isRecording) {
             if (isStopOnHideEnabled()) {
                 // Opt-in behavior: discard the recording when the keyboard hides.
@@ -436,6 +453,18 @@ public class RustInputMethodService extends InputMethodService {
         inputActive = false;
     }
 
+    /** Shared by the auto-record path and the deferred auto-start: pauses
+     *  competing audio (if enabled), opens the mic, and flips the UI into
+     *  the recording state. */
+    private void beginRecording() {
+        if (isPauseAudioEnabled()) {
+            audioPauser.request(this);
+            pauseAudioActive = true;
+        }
+        startRecording();
+        updateRecordButtonUI(true);
+    }
+
     private void updateRecordButtonUI(boolean recording) {
         isRecording = recording;
         // Keep the screen awake while recording so it never sleeps mid-capture
@@ -493,12 +522,35 @@ public class RustInputMethodService extends InputMethodService {
         mainHandler.post(() -> {
             Log.d(TAG, "Status: " + status);
             lastStatus = status;
+            boolean isError = status != null && status.startsWith("Error");
+            if (status != null && status.startsWith("Ready")) {
+                modelReady = true;
+                if (pendingAutoStart && windowVisible && !isRecording) {
+                    pendingAutoStart = false;
+                    beginRecording();
+                }
+            } else if (isError && isRecording) {
+                // The streaming consumer died without a final transcript
+                // (e.g. buffer overflow while the model loaded). Reset the
+                // session instead of dangling at "Listening..." with a hot
+                // mic: close the mic, clear the composing tail, restore the
+                // idle UI (the error text is shown by updateUiState).
+                try {
+                    stopRecording();
+                } catch (Throwable t) {
+                    Log.w(TAG, "stopRecording after error failed", t);
+                }
+                committedBase = "";
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) ic.finishComposingText();
+                updateRecordButtonUI(false);
+            }
             updateUiState();
-            if (pendingSwitchBack && status.startsWith("Error")) {
+            if (pendingSwitchBack && isError) {
                 pendingSwitchBack = false;
                 switchToPreviousInputMethod();
             }
-            if (pauseAudioActive && status != null && status.startsWith("Error")) {
+            if (pauseAudioActive && isError) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
             }
@@ -506,18 +558,21 @@ public class RustInputMethodService extends InputMethodService {
     }
 
     private void updateUiState() {
-        boolean isLoading = lastStatus.contains("Loading") || lastStatus.contains("Initializing");
+        boolean isLoading = lastStatus.contains("Loading") || lastStatus.contains("Initializing")
+                || lastStatus.contains("Checking");
         boolean isWaiting = lastStatus.contains("Waiting");
         boolean isTranscribing = lastStatus.contains("Transcribing")
                 || lastStatus.contains("Processing")
                 || lastStatus.contains("Finishing");
         boolean isError = lastStatus.startsWith("Error");
-        boolean isReady = lastStatus.equals("Ready");
 
-        // Don't show internal loading states to the user
         if (statusView != null && !isRecording) {
             if (isError) {
                 statusView.setText(lastStatus);
+            } else if (!modelReady) {
+                // Real model-load state instead of a misleading "Tap to
+                // Record" while the engine is still loading.
+                statusView.setText("Loading model…");
             } else if (isTranscribing || isWaiting) {
                 statusView.setText("Processing...");
             } else {
@@ -530,15 +585,19 @@ public class RustInputMethodService extends InputMethodService {
             progressBar.setVisibility(View.GONE);
         }
 
-        // Disable button only during transcription/processing/waiting or fatal errors
+        // The record button is unusable while the model loads (recording
+        // would race the load), during transcription, and on fatal errors —
+        // but stays tappable after a load error so the user can retry.
         if (recordContainer != null) {
-            boolean disable = isTranscribing || isWaiting || isError;
+            boolean disable = isTranscribing || isWaiting
+                    || (!modelReady && !isError);
             recordContainer.setEnabled(!disable);
             recordContainer.setAlpha(disable ? 0.5f : 1.0f);
         }
 
         if (hintView != null && !isRecording) {
-            hintView.setText("Tap to Record");
+            hintView.setText(isLoading && !modelReady ? "Loading model…"
+                    : isError ? lastStatus : "Tap to Record");
         }
     }
 
@@ -546,7 +605,10 @@ public class RustInputMethodService extends InputMethodService {
     // UI-stable prefix, `tentative` the still-revisable tail. The stable
     // delta is committed (commitText replaces any active composing region —
     // i.e. the previous tentative tail), then the new tail becomes the
-    // composing region so it can still be refined by later updates.
+    // composing region so it can still be refined by later updates. The text
+    // itself is the preview — it streams into the focused field, so the IME
+    // status row stays a state indicator ("Listening…") and shows no
+    // transcription echo.
     public void onPartialText(String committed, String tentative) {
         mainHandler.post(() -> {
             if (!isRecording) return;
@@ -557,10 +619,6 @@ public class RustInputMethodService extends InputMethodService {
                     committedBase = committed;
                 }
                 ic.setComposingText(tentative == null ? "" : tentative, 1);
-            }
-            if (statusView != null && !lastStatus.startsWith("Error")) {
-                String live = (committed == null ? "" : committed) + (tentative == null ? "" : tentative);
-                statusView.setText(live.isEmpty() ? "Listening..." : live);
             }
         });
     }
