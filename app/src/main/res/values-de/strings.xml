@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Spracheingabe &amp; Untertitel</string>
+    <string name="welcome_title">Spracheingabe</string>
     <string name="welcome_subtitle">Vollständig offline, privat und schnell.</string>
 
     <string name="section_ime">Alternative: Sprach-Tastatur</string>
     <string name="desc_ime">Lieber eine eigene Tastatur? Aktiviere die Offline-Voice-Input-Tastatur und wechsle über den Tastaturumschalter zu ihr, wenn du Spracheingabe als eigene Tastatur nutzen möchtest.</string>
     <string name="btn_ime_settings">Tastatureinstellungen öffnen</string>
 
-    <string name="section_subs">Live-Untertitel</string>
-    <string name="desc_subs">Untertitel für jede Audiowiedergabe auf deinem Gerät anzeigen. Wähle nach dem Start \'Gesamten Bildschirm teilen\' für beste Ergebnisse.</string>
-    <string name="btn_subs_start">Live-Untertitel starten</string>
-    <string name="btn_subs_advanced">Berechtigungsdialog überspringen (fortgeschritten)</string>
-    <string name="subs_advanced_title">Bildschirmaufnahme-Dialog überspringen</string>
-    <string name="subs_advanced_body">Android zeigt normalerweise bei jedem Start der Untertitel einen „Aufnahme oder Übertragung starten?“-Dialog. Fortgeschrittene Nutzer können ihn einmalig per adb vorab genehmigen, danach starten die Untertitel sofort:\n\n1. Aktiviere die Entwickleroptionen und USB-Debugging und verbinde dein Gerät mit einem Computer mit adb.\n\n2. Führe aus:\n\n%1$s\n\nDas war\'s: Die Einstellung übersteht Neustarts, und USB-Debugging kann danach wieder deaktiviert werden. Die App selbst ändert sich nicht: Android genehmigt den Dialog nur automatisch.\n\nRückgängig machen:\n\n%2$s\n\nHinweis: Dies beruht auf undokumentiertem Android-Verhalten (dem PROJECT_MEDIA-App-Op). Auf manchen Geräten (z. B. bestimmten Xiaomi-/Samsung-Versionen) funktioniert es evtl. nicht oder wird vom System zurückgesetzt; der normale Dialog bleibt immer der Fallback.</string>
-    <string name="subs_advanced_copy">Befehl kopieren</string>
-    <string name="subs_advanced_copied">Befehl kopiert</string>
 
     <string name="status_label">Status:</string>
     <string name="status_checking">Prüfe Modelldaten...</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Auto-Stopp bei Stille</string>
     <string name="setting_auto_stop_desc">Spracheingabe-Popup automatisch ~2 Sekunden nach dem Sprechende beenden</string>
 
-    <string name="setting_subtitle_lines">Untertitellänge</string>
-    <string name="setting_subtitle_lines_desc">Wie viele Zeilen die Live-Untertitel anzeigen; älterer Text scrollt weg</string>
-    <string name="subtitle_lines_2">2 Zeilen</string>
-    <string name="subtitle_lines_4">4 Zeilen</string>
-    <string name="subtitle_lines_all">Alle</string>
 
 
     <string name="section_benchmark">Benchmark</string>

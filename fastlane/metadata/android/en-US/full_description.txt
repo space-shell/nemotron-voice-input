@@ -1,33 +1,23 @@
-Offline Voice Input delivers professional-grade speech-to-text that runs entirely on your device. Whether you're writing emails, taking notes, or chatting, your voice never leaves your phone — no internet connection, no account, no tracking.
+Nemotron Voice Input turns your speech into text entirely on your device. Words appear live while you speak — no internet connection, no account, no tracking. Your voice never leaves your phone.
 
-VOICE TYPING IN ANY APP
-Tap the microphone on a compatible keyboard — such as Microsoft SwiftKey — or a website's voice-search button, and Offline Voice Input transcribes your speech straight into the text field. It registers as your device's speech-to-text provider.
-Note: some keyboards (such as Gboard) only use Google's own voice typing and can't pass speech to other apps. If yours does, switch to a keyboard like SwiftKey — or simply use the built-in voice keyboard described below, which always works.
+THREE WAYS TO USE IT
+• Voice-input popup: tap the microphone on a compatible keyboard (such as Microsoft SwiftKey) or a website's voice-search button, and a compact panel transcribes live over the current app.
+• System speech service: the app registers as your device's speech-to-text provider, streaming partial results to apps that use SpeechRecognizer.
+• Voice keyboard: a dedicated streaming keyboard of its own. Keyboards that switch to voice IMEs (such as FUTO Keyboard) jump straight to it from their mic key.
 
-LIVE SUBTITLES
-Get real-time, on-device captions for any audio or video playing on your phone — videos, podcasts, meetings and more.
+LIVE TEXT AS YOU SPEAK
+Text is committed to the field word by word as it firms up, with the still-uncertain tail refined as you keep talking — not a record-then-wait-and-paste flow. After dictation the keyboard hands control back to the keyboard you were using before (optional, on by default), and can run as a movable floating panel.
 
-TRANSCRIBE AUDIO FILES
-Share an audio file to Offline Voice Input (or open it with the app) to turn the recording into text.
+WORKS OFFLINE, ALWAYS
+The NVIDIA Nemotron speech streaming model (English) is bundled with the app (~700 MB) and runs fully on-device with constant memory — dictation length is not limited. The only permission the app requests is the microphone.
 
-OPTIONAL VOICE KEYBOARD
-Prefer voice input as its own keyboard? A dedicated voice keyboard is included — switch to it whenever you like.
-
-WHY YOU'LL LOVE IT
-• 100% offline — even works in airplane mode, nothing is ever uploaded
-• Private by design — audio is processed on-device and never stored or sent
-• Fast and accurate, powered by NVIDIA's Parakeet model
-• 25 languages, including English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian and Ukrainian
-• Free and open source (MIT License)
-
-The app downloads the speech model (~670 MB) once on first launch; afterwards everything runs locally on your device.
+ALSO INCLUDED
+• Transcribe audio files: share an audio file with the app to turn a recording into text
+• Hold-to-cancel: long-press to throw away a dictation
+• Material 3 design with dynamic color, light/dark themes, and a built-in speed benchmark
 
 POWERED BY OPEN SOURCE
-We believe in transparency and the power of the community. Offline Voice Input is built with cutting-edge open-source technology:
-• NVIDIA Parakeet TDT 0.6B — high-performance on-device speech recognition (INT8 ONNX, quantized by istupakov)
-• transcribe-rs — the Rust transcription engine by CJ Pais
-• ONNX Runtime — efficient on-device model inference
-• A native Android interface with a Rust core for speed and safety
+Built as a fork of notune/android_transcribe_app (MIT), with a Rust core running transcription through transcribe.cpp. The model is nvidia/nemotron-speech-streaming-en-0.6b (NVIDIA Open Model License), bundled as a Q8_0 GGUF.
 
 Source code, issues and contributions:
-https://github.com/notune/android_transcribe_app
+https://github.com/space-shell/nemotron-voice-input

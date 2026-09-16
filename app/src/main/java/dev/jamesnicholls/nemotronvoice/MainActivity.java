@@ -39,7 +39,7 @@ public class MainActivity extends AppCompatActivity {
         } catch (UnsatisfiedLinkError e) {
             Log.w(TAG, "Failed to load c++_shared", e);
         }
-        System.loadLibrary("android_transcribe_app");
+        System.loadLibrary("nemotron_voice_input");
     }
 
     private TextView statusText;
@@ -47,7 +47,6 @@ public class MainActivity extends AppCompatActivity {
     private ImageView voiceStatusIcon;
     private Button voiceGrantButton;
     private Button voiceTryButton;
-    private Button startSubsButton;
     private Button benchButton;
     private TextView benchResultText;
 
@@ -61,7 +60,6 @@ public class MainActivity extends AppCompatActivity {
         voiceStatusIcon = findViewById(R.id.img_voice_status);
         voiceGrantButton = findViewById(R.id.btn_voice_grant);
         voiceTryButton = findViewById(R.id.btn_voice_try);
-        startSubsButton = findViewById(R.id.btn_subs_start);
         Button imeSettingsButton = findViewById(R.id.btn_ime_settings);
         Button voiceHelpButton = findViewById(R.id.btn_voice_help);
 
@@ -73,13 +71,6 @@ public class MainActivity extends AppCompatActivity {
              Intent intent = new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS);
              startActivity(intent);
         });
-
-        startSubsButton.setOnClickListener(v -> {
-            Intent intent = new Intent(this, LiveSubtitleActivity.class);
-            startActivity(intent);
-        });
-
-        findViewById(R.id.btn_subs_advanced).setOnClickListener(v -> showSubsAdvancedDialog());
 
         benchButton = findViewById(R.id.btn_benchmark);
         benchResultText = findViewById(R.id.text_bench_result);
@@ -105,25 +96,9 @@ public class MainActivity extends AppCompatActivity {
             if (getResources().getConfiguration().smallestScreenWidthDp >= 600) {
                 createMarker("floating_keyboard");
             }
-            createMarker("settings_initialized");
-            bindFloatingSwitch();
-        }
-
-        // Live subtitle line limit: 2 (default), 4, or 0 = unlimited.
-        RadioGroup subsLinesGroup = findViewById(R.id.rg_subtitle_lines);
-        int subsLines = SubtitlePrefs.getMaxLines(this);
-        if (subsLines == 4) {
-            subsLinesGroup.check(R.id.rb_subs_4);
-        } else if (subsLines == 0) {
-            subsLinesGroup.check(R.id.rb_subs_all);
-        } else {
-            subsLinesGroup.check(R.id.rb_subs_2);
-        }
-        subsLinesGroup.setOnCheckedChangeListener((group, checkedId) -> {
-            int lines = checkedId == R.id.rb_subs_4 ? 4
-                    : checkedId == R.id.rb_subs_all ? 0 : 2;
-            SubtitlePrefs.setMaxLines(this, lines);
-        });
+             createMarker("settings_initialized");
+             bindFloatingSwitch();
+         }
 
         RadioGroup themeGroup = findViewById(R.id.rg_theme);
         switch (ThemePrefs.getMode(this)) {
@@ -251,31 +226,6 @@ public class MainActivity extends AppCompatActivity {
         }
         // onResume() also refreshes, but do it here too for an immediate update.
         updateVoiceInputStatus();
-    }
-
-    /**
-     * Explains the adb escape hatch for the MediaProjection consent dialog:
-     * once the PROJECT_MEDIA app-op is set to allow, the system permission
-     * activity returns RESULT_OK immediately, so subtitles start without the
-     * "Start recording or casting?" sheet. No app code depends on this — the
-     * normal dialog flow is the untouched fallback.
-     */
-    private void showSubsAdvancedDialog() {
-        String allowCmd = "adb shell appops set --user 0 " + getPackageName()
-                + " PROJECT_MEDIA allow";
-        String resetCmd = "adb shell appops set --user 0 " + getPackageName()
-                + " PROJECT_MEDIA default";
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.subs_advanced_title)
-                .setMessage(getString(R.string.subs_advanced_body, allowCmd, resetCmd))
-                .setPositiveButton(android.R.string.ok, null)
-                .setNeutralButton(R.string.subs_advanced_copy, (d, w) -> {
-                    android.content.ClipboardManager cm =
-                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("adb", allowCmd));
-                    snackbar(getString(R.string.subs_advanced_copied));
-                })
-                .show();
     }
 
     private void showHelpDialog() {
@@ -429,13 +379,7 @@ public class MainActivity extends AppCompatActivity {
 
     // Called from Rust
     public void onStatusUpdate(String status) {
-        runOnUiThread(() -> {
-            statusText.setText(status);
-            // "Ready" may carry a suffix, e.g. "Ready (this model can't translate)".
-            if (status.startsWith("Ready")) {
-                startSubsButton.setEnabled(true);
-            }
-        });
+        runOnUiThread(() -> statusText.setText(status));
     }
 
     private native void initNative(MainActivity activity);

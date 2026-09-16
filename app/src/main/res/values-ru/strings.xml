@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Голосовой ввод и субтитры</string>
+    <string name="welcome_title">Голосовой ввод</string>
     <string name="welcome_subtitle">Полностью офлайн, приватно и быстро.</string>
 
     <string name="section_ime">Альтернатива: голосовая клавиатура</string>
     <string name="desc_ime">Предпочитаете отдельную клавиатуру? Включите клавиатуру Nemotron Voice Input и переключайтесь на неё через переключатель клавиатур, когда хотите голосовой ввод как отдельную клавиатуру.</string>
     <string name="btn_ime_settings">Открыть настройки клавиатуры</string>
 
-    <string name="section_subs">Субтитры в реальном времени</string>
-    <string name="desc_subs">Показывайте субтитры для любого аудио, воспроизводимого на устройстве. После запуска выберите \'Демонстрация всего экрана\' для лучших результатов.</string>
-    <string name="btn_subs_start">Запустить субтитры</string>
-    <string name="btn_subs_advanced">Пропустить диалог разрешения (для опытных)</string>
-    <string name="subs_advanced_title">Пропустить диалог захвата экрана</string>
-    <string name="subs_advanced_body">Android обычно показывает диалог «Начать запись или трансляцию?» при каждом запуске субтитров. Опытные пользователи могут заранее одобрить его один раз через adb; после этого субтитры запускаются мгновенно:\n\n1. Включите режим разработчика и отладку по USB, подключите устройство к компьютеру с adb.\n\n2. Выполните:\n\n%1$s\n\nВот и всё: настройка сохраняется после перезагрузок, а отладку по USB потом можно отключить. Само приложение не меняется: Android просто автоматически подтверждает диалог.\n\nЧтобы отменить:\n\n%2$s\n\nПримечание: это опирается на недокументированное поведение Android (app-op PROJECT_MEDIA). На некоторых устройствах (например, отдельных сборках Xiaomi/Samsung) это может не работать или сбрасываться системой; обычный диалог всегда остаётся запасным вариантом.</string>
-    <string name="subs_advanced_copy">Скопировать команду</string>
-    <string name="subs_advanced_copied">Команда скопирована</string>
 
     <string name="status_label">Статус:</string>
     <string name="status_checking">Проверка данных…</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Автостоп при тишине</string>
     <string name="setting_auto_stop_desc">Автоматически закрывать окно голосового ввода примерно через 2 секунды после окончания речи</string>
 
-    <string name="setting_subtitle_lines">Длина субтитров</string>
-    <string name="setting_subtitle_lines_desc">Сколько строк показывают субтитры; более старый текст прокручивается</string>
-    <string name="subtitle_lines_2">2 строки</string>
-    <string name="subtitle_lines_4">4 строки</string>
-    <string name="subtitle_lines_all">Все</string>
 
 
     <string name="section_benchmark">Тест скорости</string>

@@ -22,7 +22,7 @@ public class RecognizeActivity extends AppCompatActivity {
     static {
         try {
             System.loadLibrary("c++_shared");
-            System.loadLibrary("android_transcribe_app");
+            System.loadLibrary("nemotron_voice_input");
         } catch (UnsatisfiedLinkError e) {
             Log.e(TAG, "Failed to load native libraries", e);
         }

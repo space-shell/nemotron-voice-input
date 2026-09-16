@@ -1,0 +1,4 @@
+- show when the voice model is loading vs ready; recording no longer starts before the model is ready (cold starts no longer lose audio or hang at "Listening")
+- fix a stuck recording state when transcription errors mid-session
+- remove the live transcription preview from the keyboard (text streams into the text field directly)
+- minimal key row and return-to-previous-keyboard on empty or canceled dictation

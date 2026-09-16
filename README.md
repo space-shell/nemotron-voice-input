@@ -17,27 +17,35 @@ Fork of [notune/android_transcribe_app](https://github.com/notune/android_transc
   `nvidia/nemotron-speech-streaming-en-0.6b` (Q8_0, ~700 MB, English, natively
   cased + punctuated). The model-import screen, language picker and translate
   toggle are gone.
-- **Streaming everywhere**: the IME, the voice-input popup, the system
+- **Streaming everywhere**: the IME, the voice-input popup, and the system
   `RecognitionService` (used by other keyboards via `SpeechRecognizer`, now
-  with `partialResults`), and live subtitles all run on the same pipeline.
+  with `partialResults`) all run the same pipeline.
   The old 60 s dictation cap is gone — the streaming model has constant memory.
-- **Return to previous keyboard** after a successful transcription (on by
-  default, toggleable) — closes the loop of "keyboard disappears after
-  dictation" (upstream #63).
+- **Model-ready gating**: the keyboard shows "Loading model…" and won't record
+  until the engine is ready, so a cold start can no longer lose audio to the
+  load race. The status row is a state indicator only (no transcription echo —
+  the text streams into the field itself).
+- **Return to previous keyboard** (on by default, toggleable): after a
+  transcription — including an empty or canceled one — the keyboard hands
+  control back to whatever you were typing on. In this mode the key row
+  shrinks to just the switch key.
 - **Floating keyboard mode**: the voice keyboard becomes a movable panel with
-  a drag handle — on by default for tablet-class screens (upstream request).
+  a drag handle, clamped to the screen and rotation-aware — on by default for
+  tablet-class screens.
 - **Hold-to-cancel**: long-press the record button to discard a dictation
   (upstream #66), plus the theme-change insets fix (upstream #99 / PR #100).
+- **Live subtitles removed**: the fork is voice input only. The
+  MediaProjection pipeline, overlay and its permissions
+  (`FOREGROUND_SERVICE*`, `SYSTEM_ALERT_WINDOW`, `POST_NOTIFICATIONS`) are
+  gone; only `RECORD_AUDIO` remains.
 
 ## Usage
-
-Same integration surface as upstream:
 
 | Path | Who uses it | What happens |
 |---|---|---|
 | **Voice-input popup** (`RECOGNIZE_SPEECH`) | SwiftKey, website voice search | Compact panel with live text over the current app |
 | **System speech service** (`RecognitionService`) | Keyboards/apps using `SpeechRecognizer` | Streaming recognition in the background with partial results |
-| **Voice keyboard (IME)** | Any keyboard switcher | Dedicated streaming voice keyboard |
+| **Voice keyboard (IME)** | FUTO's mic key (voice subtype discovery), any keyboard switcher | Dedicated streaming voice keyboard |
 
 ## Building
 
@@ -56,6 +64,11 @@ cross-compiles Rust + ggml (~5–10 min). Release builds expect
 
 Without Nix you need: JDK 17, Android SDK + NDK 28.0.13004108, Rust +
 `aarch64-linux-android` target, `cargo install cargo-ndk`, cmake.
+
+Releases are built by GitHub Actions: pushes to any branch run a debug
+validation build, and pushing a `v*` tag builds a signed APK + AAB and
+publishes them to the repo's Releases page (requires the `KEYSTORE_BASE64`,
+`KEY_ALIAS`, `KEY_PASS`, `STORE_PASS` repository secrets).
 
 ## Project structure
 

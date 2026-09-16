@@ -30,7 +30,7 @@ public class RustInputMethodService extends InputMethodService {
     static {
         try {
             System.loadLibrary("c++_shared");
-            System.loadLibrary("android_transcribe_app");
+            System.loadLibrary("nemotron_voice_input");
         } catch (UnsatisfiedLinkError e) {
             Log.e(TAG, "Failed to load native libraries", e);
         }
@@ -51,8 +51,19 @@ public class RustInputMethodService extends InputMethodService {
     // Night flag the current input view was inflated with, so it can be rebuilt
     // if the theme preference changes while this process stays alive.
     private boolean viewIsNight = false;
+    // Switch-back flag the current input view was inflated with (minimal key
+    // row); rebuilt like viewIsNight when the setting changes in-app.
+    private boolean viewIsMinimal = false;
     private Handler mainHandler;
     private boolean isRecording = false;
+    // Mirrored from the Rust engine's status callbacks: true once the model
+    // has finished loading ("Ready"). Recording before this is what made
+    // cold starts lose audio (the consumer waits for the load while the
+    // bounded audio channel overflows).
+    private boolean modelReady = false;
+    // Auto-record requested while the model was still loading; fires once
+    // "Ready" arrives (and the window is still shown).
+    private boolean pendingAutoStart = false;
     private boolean pendingSwitchBack = false;
     private String lastStatus = "Initializing...";
     // Key repeat settings
@@ -82,8 +93,18 @@ public class RustInputMethodService extends InputMethodService {
     private String pendingCommitText = null;
     // Prefix of the current streaming utterance already committed to the
     // field via commitText. The engine's committed text only grows, so the
-    // delta (committed - committedBase) is what still needs committing.
+    // delta (committed - committedBase) is what still needs committing. The
+    // FINAL full text is a separate matter: transcribe.cpp keeps committed
+    // append-only but lets the authoritative full text disagree with it (a
+    // late revision — see onTextTranscribed for the repair).
     private String committedBase = "";
+    // Tail last pushed as the field's composing region (onPartialText's
+    // `tentative`). On focus loss the editor finalizes a composing region
+    // into plain text — it must not lose visible text — so after a
+    // mid-dictation focus drop the field holds committedBase + lastTentative,
+    // and the deferred remainder in onTextTranscribed is computed against
+    // exactly that.
+    private String lastTentative = "";
     // Floating-keyboard state (drag handling).
     private boolean floatingMode = false;
     private int floatingWidthPx = 0;
@@ -126,6 +147,10 @@ public class RustInputMethodService extends InputMethodService {
                 dragHandle.setVisibility(View.VISIBLE);
                 applyFloatingWindow();
                 attachDragHandler(dragHandle);
+            } else {
+                // Reset any layout params a previous floating session left on
+                // the window (gravity/x/y survive view rebuilds).
+                applyDockedWindow();
             }
 
             // Handle window insets for avoiding navigation bar overlap (only
@@ -150,6 +175,18 @@ public class RustInputMethodService extends InputMethodService {
             spaceButton = view.findViewById(R.id.ime_space);
             enterButton = view.findViewById(R.id.ime_enter);
             switchKeyboardButton = view.findViewById(R.id.ime_switch_keyboard);
+
+            // Minimal mode (auto return to previous keyboard, the default):
+            // the editing keys and bottom hint are never reached — the
+            // keyboard closes as soon as dictation ends — so show only the
+            // switch-back key.
+            viewIsMinimal = isSwitchBackEnabled();
+            if (viewIsMinimal) {
+                backspaceButton.setVisibility(View.GONE);
+                spaceButton.setVisibility(View.GONE);
+                enterButton.setVisibility(View.GONE);
+                hintView.setVisibility(View.GONE);
+            }
 
             switchKeyboardButton.setOnClickListener(v -> {
                 if (isRecording) {
@@ -269,12 +306,17 @@ public class RustInputMethodService extends InputMethodService {
                     }
                     updateRecordButtonUI(false);
                 } else {
-                    if (isPauseAudioEnabled()) {
-                        audioPauser.request(this);
-                        pauseAudioActive = true;
+                    if (!modelReady) {
+                        // Still loading — ignore the tap (the button should
+                        // be disabled, this guards against a stale tap in
+                        // flight). After a load *error* the tap is a retry:
+                        // fall through and let the consumer re-load.
+                        if (!lastStatus.startsWith("Error")) {
+                            updateUiState();
+                            return;
+                        }
                     }
-                    startRecording();
-                    updateRecordButtonUI(true);
+                    beginRecording();
                 }
             });
 
@@ -292,10 +334,18 @@ public class RustInputMethodService extends InputMethodService {
                     pauseAudioActive = false;
                 }
                 committedBase = "";
+                lastTentative = "";
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
                 if (statusView != null) statusView.setText("Canceled");
+                // A canceled dictation also ends the session: with auto
+                // switch-back, hand the keyboard back instead of stranding
+                // the user on a text-less voice keyboard.
+                if (pendingSwitchBack || isSwitchBackEnabled()) {
+                    pendingSwitchBack = false;
+                    switchToPreviousInputMethod();
+                }
                 return true;
             });
 
@@ -313,6 +363,10 @@ public class RustInputMethodService extends InputMethodService {
     @Override
     public void onWindowShown() {
         super.onWindowShown();
+        // The framework resets the IME window to MATCH_PARENT x WRAP_CONTENT
+        // on show transitions (InputMethodService#onConfigureWindow); the
+        // floating params must be re-applied or the panel renders wrong.
+        if (floatingMode) applyFloatingWindow();
         boolean wasVisible = windowVisible;
         windowVisible = true;
         if (isRecording) {
@@ -329,12 +383,15 @@ public class RustInputMethodService extends InputMethodService {
         if (new File(getFilesDir(), "auto_record").exists()) {
             if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {
-                if (isPauseAudioEnabled()) {
-                    audioPauser.request(this);
-                    pauseAudioActive = true;
+                if (!modelReady) {
+                    // Model still loading: defer the auto-start until the
+                    // engine reports Ready, or the buffered audio overflows
+                    // and the recording is discarded.
+                    pendingAutoStart = true;
+                    updateUiState();
+                    return;
                 }
-                startRecording();
-                updateRecordButtonUI(true);
+                beginRecording();
             }
         }
     }
@@ -343,6 +400,7 @@ public class RustInputMethodService extends InputMethodService {
     public void onWindowHidden() {
         super.onWindowHidden();
         windowVisible = false;
+        pendingAutoStart = false;
         if (isRecording) {
             if (isStopOnHideEnabled()) {
                 // Opt-in behavior: discard the recording when the keyboard hides.
@@ -386,6 +444,15 @@ public class RustInputMethodService extends InputMethodService {
             // (upstream #99 / PR #100).
             if (inputView != null) inputView.requestApplyInsets();
         }
+        // The floating / minimal-keyboard markers can be toggled in the main
+        // app while this IME process stays alive; they are otherwise only
+        // read when the input view is (re)created. Rebuild so the toggle
+        // takes effect.
+        if (isFloatingKeyboardEnabled() != floatingMode
+                || isSwitchBackEnabled() != viewIsMinimal) {
+            setInputView(onCreateInputView());
+            if (inputView != null) inputView.requestApplyInsets();
+        }
         // A field is focused and the input connection is live again — commit any
         // text that finished transcribing while nothing was focused.
         flushPendingText();
@@ -395,6 +462,18 @@ public class RustInputMethodService extends InputMethodService {
     public void onFinishInput() {
         super.onFinishInput();
         inputActive = false;
+    }
+
+    /** Shared by the auto-record path and the deferred auto-start: pauses
+     *  competing audio (if enabled), opens the mic, and flips the UI into
+     *  the recording state. */
+    private void beginRecording() {
+        if (isPauseAudioEnabled()) {
+            audioPauser.request(this);
+            pauseAudioActive = true;
+        }
+        startRecording();
+        updateRecordButtonUI(true);
     }
 
     private void updateRecordButtonUI(boolean recording) {
@@ -454,12 +533,36 @@ public class RustInputMethodService extends InputMethodService {
         mainHandler.post(() -> {
             Log.d(TAG, "Status: " + status);
             lastStatus = status;
+            boolean isError = status != null && status.startsWith("Error");
+            if (status != null && status.startsWith("Ready")) {
+                modelReady = true;
+                if (pendingAutoStart && windowVisible && !isRecording) {
+                    pendingAutoStart = false;
+                    beginRecording();
+                }
+            } else if (isError && isRecording) {
+                // The streaming consumer died without a final transcript
+                // (e.g. buffer overflow while the model loaded). Reset the
+                // session instead of dangling at "Listening..." with a hot
+                // mic: close the mic, clear the composing tail, restore the
+                // idle UI (the error text is shown by updateUiState).
+                try {
+                    stopRecording();
+                } catch (Throwable t) {
+                    Log.w(TAG, "stopRecording after error failed", t);
+                }
+                committedBase = "";
+                lastTentative = "";
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) ic.finishComposingText();
+                updateRecordButtonUI(false);
+            }
             updateUiState();
-            if (pendingSwitchBack && status.startsWith("Error")) {
+            if (pendingSwitchBack && isError) {
                 pendingSwitchBack = false;
                 switchToPreviousInputMethod();
             }
-            if (pauseAudioActive && status != null && status.startsWith("Error")) {
+            if (pauseAudioActive && isError) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
             }
@@ -467,18 +570,21 @@ public class RustInputMethodService extends InputMethodService {
     }
 
     private void updateUiState() {
-        boolean isLoading = lastStatus.contains("Loading") || lastStatus.contains("Initializing");
+        boolean isLoading = lastStatus.contains("Loading") || lastStatus.contains("Initializing")
+                || lastStatus.contains("Checking");
         boolean isWaiting = lastStatus.contains("Waiting");
         boolean isTranscribing = lastStatus.contains("Transcribing")
                 || lastStatus.contains("Processing")
                 || lastStatus.contains("Finishing");
         boolean isError = lastStatus.startsWith("Error");
-        boolean isReady = lastStatus.equals("Ready");
 
-        // Don't show internal loading states to the user
         if (statusView != null && !isRecording) {
             if (isError) {
                 statusView.setText(lastStatus);
+            } else if (!modelReady) {
+                // Real model-load state instead of a misleading "Tap to
+                // Record" while the engine is still loading.
+                statusView.setText("Loading model…");
             } else if (isTranscribing || isWaiting) {
                 statusView.setText("Processing...");
             } else {
@@ -491,15 +597,19 @@ public class RustInputMethodService extends InputMethodService {
             progressBar.setVisibility(View.GONE);
         }
 
-        // Disable button only during transcription/processing/waiting or fatal errors
+        // The record button is unusable while the model loads (recording
+        // would race the load), during transcription, and on fatal errors —
+        // but stays tappable after a load error so the user can retry.
         if (recordContainer != null) {
-            boolean disable = isTranscribing || isWaiting || isError;
+            boolean disable = isTranscribing || isWaiting
+                    || (!modelReady && !isError);
             recordContainer.setEnabled(!disable);
             recordContainer.setAlpha(disable ? 0.5f : 1.0f);
         }
 
         if (hintView != null && !isRecording) {
-            hintView.setText("Tap to Record");
+            hintView.setText(isLoading && !modelReady ? "Loading model…"
+                    : isError ? lastStatus : "Tap to Record");
         }
     }
 
@@ -507,7 +617,10 @@ public class RustInputMethodService extends InputMethodService {
     // UI-stable prefix, `tentative` the still-revisable tail. The stable
     // delta is committed (commitText replaces any active composing region —
     // i.e. the previous tentative tail), then the new tail becomes the
-    // composing region so it can still be refined by later updates.
+    // composing region so it can still be refined by later updates. The text
+    // itself is the preview — it streams into the focused field, so the IME
+    // status row stays a state indicator ("Listening…") and shows no
+    // transcription echo.
     public void onPartialText(String committed, String tentative) {
         mainHandler.post(() -> {
             if (!isRecording) return;
@@ -517,11 +630,8 @@ public class RustInputMethodService extends InputMethodService {
                     ic.commitText(committed.substring(committedBase.length()), 1);
                     committedBase = committed;
                 }
-                ic.setComposingText(tentative == null ? "" : tentative, 1);
-            }
-            if (statusView != null && !lastStatus.startsWith("Error")) {
-                String live = (committed == null ? "" : committed) + (tentative == null ? "" : tentative);
-                statusView.setText(live.isEmpty() ? "Listening..." : live);
+                lastTentative = tentative == null ? "" : tentative;
+                ic.setComposingText(lastTentative, 1);
             }
         });
     }
@@ -538,13 +648,16 @@ public class RustInputMethodService extends InputMethodService {
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 committedBase = "";
+                lastTentative = "";
                 updateRecordButtonUI(false);
                 if (statusView != null) statusView.setText("Tap to Record");
                 if (pauseAudioActive) {
                     audioPauser.abandon(this);
                     pauseAudioActive = false;
                 }
-                if (pendingSwitchBack) {
+                if (pendingSwitchBack || isSwitchBackEnabled()) {
+                    // Nothing recognized still counts as "dictation ended":
+                    // with auto switch-back, return to the previous keyboard.
                     pendingSwitchBack = false;
                     switchToPreviousInputMethod();
                 }
@@ -552,15 +665,25 @@ public class RustInputMethodService extends InputMethodService {
             }
             InputConnection ic = getCurrentInputConnection();
             if (inputActive && ic != null) {
-                // Commit the not-yet-committed remainder (this also replaces
-                // the composing region), then the trailing space, keeping the
-                // batch-era convention of a space after each utterance.
-                String remainder = finalText.length() > committedBase.length()
-                        ? finalText.substring(committedBase.length()) : null;
-                if (remainder != null && !remainder.isEmpty()) {
-                    ic.commitText(remainder, 1);
+                // Commit the not-yet-committed remainder (commitText also
+                // replaces the composing region), then the trailing space,
+                // keeping the batch-era convention of a space after each
+                // utterance. transcribe.cpp guarantees the streamed committed
+                // prefix is append-only, but the final full text can still
+                // disagree with it — a late revision of already-stable text,
+                // or just the trim() on the Rust side eating a trailing space
+                // the committer had already sent. So the split point is the
+                // real common prefix, not committedBase.length().
+                int common = commonPrefixLength(finalText, committedBase);
+                if (common == committedBase.length()) {
+                    String remainder = finalText.substring(common);
+                    if (!remainder.isEmpty()) {
+                        ic.commitText(remainder, 1);
+                    } else {
+                        ic.finishComposingText();
+                    }
                 } else {
-                    ic.finishComposingText();
+                    repairCommittedPrefix(ic, finalText, common);
                 }
                 ic.commitText(" ", 1);
 
@@ -578,11 +701,32 @@ public class RustInputMethodService extends InputMethodService {
             } else {
                 // No editor is focused right now (the field dropped focus
                 // mid-dictation). Committing now would be silently dropped, so
-                // defer the full text until a field is focused again instead
-                // of losing it.
-                pendingCommitText = finalText + " ";
+                // defer until a field is focused again instead of losing the
+                // text. The old field still holds everything we streamed —
+                // committedBase, plus the composing tail the editor finalized
+                // into plain text on focus loss — so defer only the remainder
+                // past that, or the refocus duplicates it.
+                String streamed = committedBase + lastTentative;
+                int common = commonPrefixLength(finalText, streamed);
+                if (common == streamed.length()) {
+                    String remainder = finalText.substring(common);
+                    if (!remainder.isEmpty()) {
+                        pendingCommitText = remainder + " ";
+                    }
+                    // Else the whole final text is already in the old field;
+                    // deferring a lone space would double-space on refocus.
+                } else {
+                    // The final text revised streamed text the unfocused field
+                    // already holds. Those stale bytes are stuck (no
+                    // connection, unknown cursor position), and appending a
+                    // mismatched tail would corrupt the field — leave the
+                    // streamed text rather than mangle it.
+                    Log.w(TAG, "final transcript disagrees with streamed text; "
+                            + "deferred commit skipped");
+                }
             }
             committedBase = "";
+            lastTentative = "";
             if (pauseAudioActive) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
@@ -611,6 +755,44 @@ public class RustInputMethodService extends InputMethodService {
             pendingCommitText = null;
         }
     }
+
+    /** Length of the longest common prefix of a and b. */
+    private static int commonPrefixLength(String a, String b) {
+        int n = Math.min(a.length(), b.length());
+        int i = 0;
+        while (i < n && a.charAt(i) == b.charAt(i)) i++;
+        return i;
+    }
+
+    /** The final transcript shrank or rewrote text the field already holds
+     *  relative to the streamed committed prefix (committedBase[common..] is
+     *  no longer part of the final text). Committed text can't be un-committed,
+     *  so repair in place: drop the composing tail, delete the stale committed
+     *  bytes, and commit the corrected suffix. The delete is verified against
+     *  the actual field contents first — if the user moved the cursor or typed
+     *  around our commits, leave the streamed text rather than eat theirs. */
+    private void repairCommittedPrefix(InputConnection ic, String finalText, int common) {
+        int excess = committedBase.length() - common;
+        // Remove the (stale) tentative tail without committing it, so the
+        // cursor lands right after the committed prefix.
+        ic.setComposingText("", 1);
+        CharSequence before = ic.getTextBeforeCursor(excess, 0);
+        if (before != null && before.length() == excess
+                && committedBase.substring(common).contentEquals(before)) {
+            ic.deleteSurroundingText(excess, 0);
+            String corrected = finalText.substring(common);
+            if (!corrected.isEmpty()) {
+                ic.commitText(corrected, 1);
+            } else {
+                ic.finishComposingText();
+            }
+        } else {
+            Log.w(TAG, "final transcript disagrees with committed prefix; "
+                    + "leaving streamed text in field");
+            ic.finishComposingText();
+        }
+    }
+
     public void onAudioLevel(float level) {
         if (micLevelView != null) {
             mainHandler.post(() -> micLevelView.setLevel(level));
@@ -647,26 +829,100 @@ public class RustInputMethodService extends InputMethodService {
     private static final String KEY_FLOAT_X = "float_x";
     private static final String KEY_FLOAT_Y = "float_y";
 
-    /** Turns the IME window into a wrap-content, positionable panel. */
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** Bounds of the display the IME window is on (rotation-aware). */
+    private android.graphics.Rect displayBounds() {
+        android.graphics.Rect r = new android.graphics.Rect();
+        Object wm = getSystemService(Context.WINDOW_SERVICE);
+        if (wm instanceof android.view.WindowManager) {
+            android.view.WindowManager wmm = (android.view.WindowManager) wm;
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                r.set(wmm.getCurrentWindowMetrics().getBounds());
+            } else {
+                android.graphics.Point p = new android.graphics.Point();
+                wmm.getDefaultDisplay().getRealSize(p);
+                r.set(0, 0, p.x, p.y);
+            }
+        }
+        if (r.isEmpty()) {
+            r.set(0, 0, getResources().getDisplayMetrics().widthPixels,
+                    getResources().getDisplayMetrics().heightPixels);
+        }
+        return r;
+    }
+
+    /** Panel height for clamping: the measured view once laid out, else an
+     *  estimate (half the display) so the first show is still on-screen. */
+    private int floatingPanelHeight() {
+        if (inputView != null && inputView.getHeight() > 0) return inputView.getHeight();
+        return Math.max(1, displayBounds().height() / 2);
+    }
+
+    /**
+     * The framework lays the IME window out through here on show and
+     * fullscreen-mode transitions; the default forces MATCH_PARENT x
+     * WRAP_CONTENT, which clobbers the floating geometry. Route both modes
+     * through our own params instead.
+     */
+    @Override
+    public void onConfigureWindow(android.view.Window win, boolean isFullscreen,
+            boolean isCandidatesOnly) {
+        if (floatingMode) {
+            applyFloatingWindow();
+        } else {
+            applyDockedWindow();
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Rotation changed the display bounds; re-clamp the saved position.
+        if (floatingMode) applyFloatingWindow();
+    }
+
+    /** Turns the IME window into a wrap-content, positionable panel. The
+     *  restored position is clamped so the panel is always fully on-screen. */
     private void applyFloatingWindow() {
         android.view.Window window = getWindow().getWindow();
         if (window == null) return;
         float density = getResources().getDisplayMetrics().density;
+        android.graphics.Rect bounds = displayBounds();
         floatingWidthPx = (int) (340 * density); // ~340dp panel; keys wrap within it
+        if (floatingWidthPx > bounds.width()) floatingWidthPx = bounds.width();
 
+        android.content.SharedPreferences prefs =
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         android.view.WindowManager.LayoutParams lp = window.getAttributes();
         lp.width = floatingWidthPx;
         lp.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
         lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
-        android.content.SharedPreferences prefs =
-                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        lp.x = prefs.getInt(KEY_FLOAT_X, 16 * (int) density);
-        lp.y = prefs.getInt(KEY_FLOAT_Y, 96 * (int) density);
+        lp.x = clamp(prefs.getInt(KEY_FLOAT_X, 16 * (int) density),
+                0, Math.max(0, bounds.width() - floatingWidthPx));
+        lp.y = clamp(prefs.getInt(KEY_FLOAT_Y, 96 * (int) density),
+                0, Math.max(0, bounds.height() - floatingPanelHeight()));
         window.setAttributes(lp);
     }
 
-    /** Drag-to-move for the floating panel: the handle moves the IME window
-     *  and the position is remembered across sessions. */
+    /** Docked slab: full width at the bottom, no offsets. */
+    private void applyDockedWindow() {
+        android.view.Window window = getWindow().getWindow();
+        if (window == null) return;
+        android.view.WindowManager.LayoutParams lp = window.getAttributes();
+        lp.width = android.view.WindowManager.LayoutParams.MATCH_PARENT;
+        lp.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
+        lp.gravity = android.view.Gravity.BOTTOM;
+        lp.x = 0;
+        lp.y = 0;
+        window.setAttributes(lp);
+    }
+
+    /** Drag-to-move for the floating panel: the handle moves the IME window,
+     *  the position stays clamped on-screen, and it is remembered across
+     *  sessions. */
     private void attachDragHandler(View dragHandle) {
         dragHandle.setOnTouchListener((v, event) -> {
             android.view.Window window = getWindow().getWindow();
@@ -679,8 +935,11 @@ public class RustInputMethodService extends InputMethodService {
                 case android.view.MotionEvent.ACTION_MOVE: {
                     float[] start = (float[]) v.getTag();
                     if (start == null) return true;
-                    lp.x = (int) (start[2] + event.getRawX() - start[0]);
-                    lp.y = (int) (start[3] + event.getRawY() - start[1]);
+                    android.graphics.Rect bounds = displayBounds();
+                    lp.x = clamp((int) (start[2] + event.getRawX() - start[0]),
+                            0, Math.max(0, bounds.width() - floatingWidthPx));
+                    lp.y = clamp((int) (start[3] + event.getRawY() - start[1]),
+                            0, Math.max(0, bounds.height() - floatingPanelHeight()));
                     window.setAttributes(lp);
                     return true;
                 }

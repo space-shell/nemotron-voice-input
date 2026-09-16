@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="welcome_title">Entrada de voz y subtítulos</string>
+    <string name="welcome_title">Entrada de voz</string>
     <string name="welcome_subtitle">Totalmente sin conexión, privado y rápido.</string>
 
     <string name="section_ime">Alternativa: teclado de voz</string>
     <string name="desc_ime">¿Prefieres un teclado dedicado? Activa el teclado Nemotron Voice Input y cambia a él desde el selector de teclados cuando quieras la entrada de voz como teclado propio.</string>
     <string name="btn_ime_settings">Abrir ajustes del teclado</string>
 
-    <string name="section_subs">Subtítulos en directo</string>
-    <string name="desc_subs">Muestra subtítulos para cualquier audio que se reproduzca en tu dispositivo. Tras iniciar, elige \'Compartir toda la pantalla\' para mejores resultados.</string>
-    <string name="btn_subs_start">Iniciar subtítulos en directo</string>
-    <string name="btn_subs_advanced">Omitir el cuadro de permiso (avanzado)</string>
-    <string name="subs_advanced_title">Omitir el cuadro de captura de pantalla</string>
-    <string name="subs_advanced_body">Android suele mostrar un cuadro «¿Iniciar grabación o transmisión?» cada vez que inician los subtítulos. Los usuarios avanzados pueden aprobarlo una vez mediante adb; luego los subtítulos inician al instante:\n\n1. Activa las opciones de desarrollador y la depuración USB, y conecta tu dispositivo a un ordenador con adb.\n\n2. Ejecuta:\n\n%1$s\n\nEso es todo: el ajuste sobrevive a los reinicios, y la depuración USB puede desactivarse después. La app en sí no cambia: Android solo concede el cuadro automáticamente.\n\nPara deshacerlo:\n\n%2$s\n\nNota: esto depende de un comportamiento no documentado de Android (el app-op PROJECT_MEDIA). En algunos dispositivos (p. ej. ciertas versiones de Xiaomi/Samsung) puede que no funcione o que el sistema lo restablezca; el cuadro normal es siempre la alternativa.</string>
-    <string name="subs_advanced_copy">Copiar comando</string>
-    <string name="subs_advanced_copied">Comando copiado</string>
 
     <string name="status_label">Estado:</string>
     <string name="status_checking">Comprobando datos…</string>
@@ -37,11 +29,6 @@
     <string name="setting_auto_stop">Parada automática tras silencio</string>
     <string name="setting_auto_stop_desc">Cerrar la ventana de entrada de voz automáticamente ~2 segundos después de dejar de hablar</string>
 
-    <string name="setting_subtitle_lines">Longitud de subtítulos</string>
-    <string name="setting_subtitle_lines_desc">Cuántas líneas muestran los subtítulos en directo; el texto antiguo se desplaza</string>
-    <string name="subtitle_lines_2">2 líneas</string>
-    <string name="subtitle_lines_4">4 líneas</string>
-    <string name="subtitle_lines_all">Todas</string>
 
 
     <string name="section_benchmark">Prueba de rendimiento</string>

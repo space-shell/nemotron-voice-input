@@ -1,0 +1,2 @@
+- fix the floating keyboard: the panel now renders, stays fully on-screen while dragging, and keeps its position across rotation
+- remove live subtitles to focus on voice input; the app no longer needs screen-capture, foreground-service or notification permissions
