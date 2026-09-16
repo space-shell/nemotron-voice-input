@@ -93,8 +93,18 @@ public class RustInputMethodService extends InputMethodService {
     private String pendingCommitText = null;
     // Prefix of the current streaming utterance already committed to the
     // field via commitText. The engine's committed text only grows, so the
-    // delta (committed - committedBase) is what still needs committing.
+    // delta (committed - committedBase) is what still needs committing. The
+    // FINAL full text is a separate matter: transcribe.cpp keeps committed
+    // append-only but lets the authoritative full text disagree with it (a
+    // late revision — see onTextTranscribed for the repair).
     private String committedBase = "";
+    // Tail last pushed as the field's composing region (onPartialText's
+    // `tentative`). On focus loss the editor finalizes a composing region
+    // into plain text — it must not lose visible text — so after a
+    // mid-dictation focus drop the field holds committedBase + lastTentative,
+    // and the deferred remainder in onTextTranscribed is computed against
+    // exactly that.
+    private String lastTentative = "";
     // Floating-keyboard state (drag handling).
     private boolean floatingMode = false;
     private int floatingWidthPx = 0;
@@ -324,6 +334,7 @@ public class RustInputMethodService extends InputMethodService {
                     pauseAudioActive = false;
                 }
                 committedBase = "";
+                lastTentative = "";
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
@@ -541,6 +552,7 @@ public class RustInputMethodService extends InputMethodService {
                     Log.w(TAG, "stopRecording after error failed", t);
                 }
                 committedBase = "";
+                lastTentative = "";
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
@@ -618,7 +630,8 @@ public class RustInputMethodService extends InputMethodService {
                     ic.commitText(committed.substring(committedBase.length()), 1);
                     committedBase = committed;
                 }
-                ic.setComposingText(tentative == null ? "" : tentative, 1);
+                lastTentative = tentative == null ? "" : tentative;
+                ic.setComposingText(lastTentative, 1);
             }
         });
     }
@@ -635,6 +648,7 @@ public class RustInputMethodService extends InputMethodService {
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 committedBase = "";
+                lastTentative = "";
                 updateRecordButtonUI(false);
                 if (statusView != null) statusView.setText("Tap to Record");
                 if (pauseAudioActive) {
@@ -651,15 +665,25 @@ public class RustInputMethodService extends InputMethodService {
             }
             InputConnection ic = getCurrentInputConnection();
             if (inputActive && ic != null) {
-                // Commit the not-yet-committed remainder (this also replaces
-                // the composing region), then the trailing space, keeping the
-                // batch-era convention of a space after each utterance.
-                String remainder = finalText.length() > committedBase.length()
-                        ? finalText.substring(committedBase.length()) : null;
-                if (remainder != null && !remainder.isEmpty()) {
-                    ic.commitText(remainder, 1);
+                // Commit the not-yet-committed remainder (commitText also
+                // replaces the composing region), then the trailing space,
+                // keeping the batch-era convention of a space after each
+                // utterance. transcribe.cpp guarantees the streamed committed
+                // prefix is append-only, but the final full text can still
+                // disagree with it — a late revision of already-stable text,
+                // or just the trim() on the Rust side eating a trailing space
+                // the committer had already sent. So the split point is the
+                // real common prefix, not committedBase.length().
+                int common = commonPrefixLength(finalText, committedBase);
+                if (common == committedBase.length()) {
+                    String remainder = finalText.substring(common);
+                    if (!remainder.isEmpty()) {
+                        ic.commitText(remainder, 1);
+                    } else {
+                        ic.finishComposingText();
+                    }
                 } else {
-                    ic.finishComposingText();
+                    repairCommittedPrefix(ic, finalText, common);
                 }
                 ic.commitText(" ", 1);
 
@@ -677,11 +701,32 @@ public class RustInputMethodService extends InputMethodService {
             } else {
                 // No editor is focused right now (the field dropped focus
                 // mid-dictation). Committing now would be silently dropped, so
-                // defer the full text until a field is focused again instead
-                // of losing it.
-                pendingCommitText = finalText + " ";
+                // defer until a field is focused again instead of losing the
+                // text. The old field still holds everything we streamed —
+                // committedBase, plus the composing tail the editor finalized
+                // into plain text on focus loss — so defer only the remainder
+                // past that, or the refocus duplicates it.
+                String streamed = committedBase + lastTentative;
+                int common = commonPrefixLength(finalText, streamed);
+                if (common == streamed.length()) {
+                    String remainder = finalText.substring(common);
+                    if (!remainder.isEmpty()) {
+                        pendingCommitText = remainder + " ";
+                    }
+                    // Else the whole final text is already in the old field;
+                    // deferring a lone space would double-space on refocus.
+                } else {
+                    // The final text revised streamed text the unfocused field
+                    // already holds. Those stale bytes are stuck (no
+                    // connection, unknown cursor position), and appending a
+                    // mismatched tail would corrupt the field — leave the
+                    // streamed text rather than mangle it.
+                    Log.w(TAG, "final transcript disagrees with streamed text; "
+                            + "deferred commit skipped");
+                }
             }
             committedBase = "";
+            lastTentative = "";
             if (pauseAudioActive) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
@@ -710,6 +755,44 @@ public class RustInputMethodService extends InputMethodService {
             pendingCommitText = null;
         }
     }
+
+    /** Length of the longest common prefix of a and b. */
+    private static int commonPrefixLength(String a, String b) {
+        int n = Math.min(a.length(), b.length());
+        int i = 0;
+        while (i < n && a.charAt(i) == b.charAt(i)) i++;
+        return i;
+    }
+
+    /** The final transcript shrank or rewrote text the field already holds
+     *  relative to the streamed committed prefix (committedBase[common..] is
+     *  no longer part of the final text). Committed text can't be un-committed,
+     *  so repair in place: drop the composing tail, delete the stale committed
+     *  bytes, and commit the corrected suffix. The delete is verified against
+     *  the actual field contents first — if the user moved the cursor or typed
+     *  around our commits, leave the streamed text rather than eat theirs. */
+    private void repairCommittedPrefix(InputConnection ic, String finalText, int common) {
+        int excess = committedBase.length() - common;
+        // Remove the (stale) tentative tail without committing it, so the
+        // cursor lands right after the committed prefix.
+        ic.setComposingText("", 1);
+        CharSequence before = ic.getTextBeforeCursor(excess, 0);
+        if (before != null && before.length() == excess
+                && committedBase.substring(common).contentEquals(before)) {
+            ic.deleteSurroundingText(excess, 0);
+            String corrected = finalText.substring(common);
+            if (!corrected.isEmpty()) {
+                ic.commitText(corrected, 1);
+            } else {
+                ic.finishComposingText();
+            }
+        } else {
+            Log.w(TAG, "final transcript disagrees with committed prefix; "
+                    + "leaving streamed text in field");
+            ic.finishComposingText();
+        }
+    }
+
     public void onAudioLevel(float level) {
         if (micLevelView != null) {
             mainHandler.post(() -> micLevelView.setLevel(level));
