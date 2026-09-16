@@ -1,0 +1,2 @@
+- fix text being duplicated when the target field regains focus after a mid-dictation focus drop
+- correctly finalize when the final transcript revises text already streamed into the field (verified in-place repair instead of appending a mismatched tail)
