@@ -39,7 +39,7 @@ public class MainActivity extends AppCompatActivity {
         } catch (UnsatisfiedLinkError e) {
             Log.w(TAG, "Failed to load c++_shared", e);
         }
-        System.loadLibrary("android_transcribe_app");
+        System.loadLibrary("nemotron_voice_input");
     }
 
     private TextView statusText;
