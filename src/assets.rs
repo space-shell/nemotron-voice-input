@@ -1,15 +1,25 @@
-//! Extraction of the bundled speech model from APK assets into filesDir.
+//! Location and validation of the on-device speech model.
+//!
+//! The GGUF is no longer bundled in the APK: the app downloads it once on
+//! first launch (`ModelDownloader`, main process) into
+//! `filesDir/builtin-model/` — the same layout the bundled-asset era
+//! wrote, so upgrades keep an already-extracted model. This module only
+//! resolves and validates the file; native code never touches the network.
 
 use jni::objects::JObject;
 use jni::JNIEnv;
 use std::path::{Path, PathBuf};
 
-/// Asset directory (and filesDir subdirectory) holding the bundled GGUF.
+/// filesDir subdirectory holding the model GGUF.
 const BUILTIN_MODEL_DIR: &str = "builtin-model";
-/// Marker file written after a successful extraction. If this file is missing,
-/// the directory is assumed to be incomplete (e.g. interrupted mid-extraction)
-/// and the assets will be re-extracted.
-const EXTRACTION_COMPLETE_MARKER: &str = ".extraction_complete";
+/// Marker file present once a complete, checksum-verified download exists.
+/// Without it the directory is treated as incomplete. Removed by the engine
+/// when a load fails on (likely corrupt) files, which makes the app offer
+/// the download again.
+const DOWNLOAD_COMPLETE_MARKER: &str = ".download_complete";
+/// Marker file written by the bundled-asset era; treated as equivalent to
+/// a completed download (those bytes were verified at build time).
+const LEGACY_EXTRACTION_MARKER: &str = ".extraction_complete";
 /// Model directory of the pre-GGUF (ONNX) app versions; deleted on sight so
 /// upgrades don't leave ~670 MB of dead files behind.
 const LEGACY_MODEL_DIR: &str = "parakeet-tdt-0.6b-v3-int8";
@@ -31,9 +41,11 @@ pub fn files_dir(env: &mut JNIEnv, context: &JObject) -> anyhow::Result<PathBuf>
     Ok(PathBuf::from(path_string))
 }
 
-/// Extracts the bundled model from APK assets (if not already done) and
-/// returns the path of its GGUF file.
-pub fn extract_builtin_model(env: &mut JNIEnv, context: &JObject) -> anyhow::Result<PathBuf> {
+/// Returns the path of the model GGUF, or an error directing the user to
+/// download it from the app. Only the completion marker is checked here:
+/// the downloader verified the bytes when it wrote them, and the engine
+/// detects any later corruption and removes the marker.
+pub fn ensure_model(env: &mut JNIEnv, context: &JObject) -> anyhow::Result<PathBuf> {
     let base_path = files_dir(env, context)?;
 
     let legacy_dir = base_path.join(LEGACY_MODEL_DIR);
@@ -43,47 +55,25 @@ pub fn extract_builtin_model(env: &mut JNIEnv, context: &JObject) -> anyhow::Res
     }
 
     let model_dir = base_path.join(BUILTIN_MODEL_DIR);
-    let marker_file = model_dir.join(EXTRACTION_COMPLETE_MARKER);
-
-    // Only skip extraction if the marker file exists (proves prior extraction completed)
-    if marker_file.exists() {
-        return find_gguf(&model_dir);
+    let complete = model_dir.join(DOWNLOAD_COMPLETE_MARKER).exists()
+        || model_dir.join(LEGACY_EXTRACTION_MARKER).exists();
+    if !complete {
+        anyhow::bail!("speech model not downloaded yet — open the app to download it");
     }
-
-    // Incomplete or missing — wipe and re-extract
-    if model_dir.exists() {
-        log::info!("Removing incomplete model directory for re-extraction");
-        let _ = std::fs::remove_dir_all(&model_dir);
-    }
-
-    std::fs::create_dir_all(&model_dir)?;
-
-    let asset_manager_obj = env
-        .call_method(
-            context,
-            "getAssets",
-            "()Landroid/content/res/AssetManager;",
-            &[],
-        )?
-        .l()?;
-
-    copy_assets_recursively(env, &asset_manager_obj, BUILTIN_MODEL_DIR, &base_path)?;
-
-    // Write the marker file to indicate successful completion
-    std::fs::write(&marker_file, "ok")?;
-    log::info!("Asset extraction complete, marker written");
 
     find_gguf(&model_dir)
 }
 
-/// Removes the extraction marker so the next load re-extracts the bundled
-/// model — called when a load fails on (likely corrupt) extracted files.
-pub fn invalidate_builtin_model(model_path: &Path) {
+/// Removes the completion marker so the app re-offers the download —
+/// called when a load fails on (likely corrupt) downloaded files.
+pub fn invalidate_model(model_path: &Path) {
     if let Some(dir) = model_path.parent() {
-        let marker = dir.join(EXTRACTION_COMPLETE_MARKER);
-        if marker.exists() {
-            log::warn!("Model load failed, removing extraction marker for re-extraction");
-            let _ = std::fs::remove_file(&marker);
+        for marker in [DOWNLOAD_COMPLETE_MARKER, LEGACY_EXTRACTION_MARKER] {
+            let marker = dir.join(marker);
+            if marker.exists() {
+                log::warn!("Model load failed, removing completion marker");
+                let _ = std::fs::remove_file(&marker);
+            }
         }
     }
 }
@@ -97,98 +87,4 @@ fn find_gguf(dir: &Path) -> anyhow::Result<PathBuf> {
         }
     }
     anyhow::bail!("no GGUF file found in {}", dir.display())
-}
-
-fn copy_assets_recursively(
-    env: &mut JNIEnv,
-    asset_manager: &JObject,
-    path: &str,
-    target_root: &Path,
-) -> anyhow::Result<()> {
-    use jni::objects::JObjectArray;
-
-    let path_jstring = env.new_string(path)?;
-    let list_array_obj = env
-        .call_method(
-            asset_manager,
-            "list",
-            "(Ljava/lang/String;)[Ljava/lang/String;",
-            &[(&path_jstring).into()],
-        )?
-        .l()?;
-
-    let list_array: JObjectArray = list_array_obj.into();
-    let len = env.get_array_length(&list_array)?;
-
-    if len == 0 {
-        return copy_asset_file(env, asset_manager, path, target_root);
-    }
-
-    let target_dir = target_root.join(path);
-    std::fs::create_dir_all(&target_dir)?;
-
-    for i in 0..len {
-        let file_name_obj = env.get_object_array_element(&list_array, i)?;
-        let file_name: String = env.get_string(&file_name_obj.into())?.into();
-
-        let child_path = if path.is_empty() {
-            file_name
-        } else {
-            format!("{}/{}", path, file_name)
-        };
-
-        copy_assets_recursively(env, asset_manager, &child_path, target_root)?;
-    }
-    Ok(())
-}
-
-fn copy_asset_file(
-    env: &mut JNIEnv,
-    asset_manager: &JObject,
-    asset_path: &str,
-    target_root: &Path,
-) -> anyhow::Result<()> {
-    let path_jstring = env.new_string(asset_path)?;
-    let result = env.call_method(
-        asset_manager,
-        "open",
-        "(Ljava/lang/String;)Ljava/io/InputStream;",
-        &[(&path_jstring).into()],
-    );
-
-    match result {
-        Ok(stream_val) => {
-            let stream_obj = stream_val.l()?;
-            let target_file_path = target_root.join(asset_path);
-
-            let mut file = std::fs::File::create(&target_file_path)?;
-            let mut buffer = [0u8; 8192];
-            let buffer_j = env.new_byte_array(8192)?;
-
-            loop {
-                let bytes_read = env
-                    .call_method(&stream_obj, "read", "([B)I", &[(&buffer_j).into()])?
-                    .i()?;
-
-                if bytes_read == -1 {
-                    break;
-                }
-
-                let bytes_read_usize = bytes_read as usize;
-                let buffer_slice = unsafe {
-                    std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut i8, bytes_read_usize)
-                };
-
-                env.get_byte_array_region(&buffer_j, 0, buffer_slice)?;
-
-                use std::io::Write;
-                file.write_all(&buffer[0..bytes_read_usize])?;
-            }
-
-            env.call_method(&stream_obj, "close", "()V", &[])?;
-            log::info!("Extracted: {:?}", target_file_path);
-            Ok(())
-        }
-        Err(_) => Ok(()),
-    }
 }

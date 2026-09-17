@@ -319,8 +319,8 @@ fn read_config(path: &Path) -> Option<String> {
     }
 }
 
-/// Performs the model load: the bundled Nemotron GGUF extracted from APK
-/// assets into filesDir.
+/// Performs the model load: the Nemotron GGUF downloaded at runtime into
+/// filesDir (see assets.rs — the APK ships without a model).
 fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
     if let Err(msg) = check_cpu_features() {
         notify_status(env, context, &format!("Error: {}", msg));
@@ -337,10 +337,8 @@ fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
         .filter(|&n| n > 0)
         .unwrap_or_else(performance_core_count);
 
-    notify_status(env, context, "Checking assets...");
-
-    let path = assets::extract_builtin_model(env, context).map_err(|e| {
-        let msg = format!("Asset error: {}", e);
+    let path = assets::ensure_model(env, context).map_err(|e| {
+        let msg = e.to_string();
         notify_status(env, context, &format!("Error: {}", msg));
         msg
     })?;
@@ -354,9 +352,9 @@ fn do_load(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            // Load failed — likely corrupt/incomplete extraction. Invalidate
-            // it so the next attempt re-extracts from the APK.
-            assets::invalidate_builtin_model(&path);
+            // Load failed — likely corrupt files. Invalidate them so the
+            // app re-offers the download on the next attempt.
+            assets::invalidate_model(&path);
             let msg = format!("Model error: {}", e);
             notify_status(env, context, &format!("Error: {}", msg));
             Err(msg)

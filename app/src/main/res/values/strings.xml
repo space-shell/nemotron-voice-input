@@ -9,11 +9,15 @@
     <string name="btn_ime_settings">Open Keyboard Settings</string>
     
     <string name="status_label">Status:</string>
-    <string name="status_checking">Checking assets...</string>
+    <string name="status_checking">Starting…</string>
 
-    <!-- Speech engine (single bundled Nemotron streaming model) -->
+    <!-- Speech engine (single Nemotron streaming model) -->
     <string name="engine_section">Speech engine</string>
-    <string name="engine_desc">Nemotron speech streaming 0.6B (English) runs entirely on-device and streams text live while you speak. No audio ever leaves your device, and no network is used.</string>
+    <string name="engine_desc">Nemotron speech streaming 0.6B (English) runs entirely on-device and streams text live while you speak. The model (~700 MB) is downloaded once on first launch; after that no audio ever leaves your device and no network is used.</string>
+    <string name="btn_model_download">Download speech model (~700 MB)</string>
+    <string name="model_not_downloaded">Speech model not downloaded yet.</string>
+    <string name="model_downloading">Downloading model… %1$d%%</string>
+    <string name="model_download_failed">Download failed: %1$s</string>
     <string name="setting_switch_back">Return to previous keyboard</string>
     <string name="setting_switch_back_desc">After a successful transcription, automatically switch back to the keyboard you were using before.</string>
     <string name="setting_floating">Floating keyboard</string>

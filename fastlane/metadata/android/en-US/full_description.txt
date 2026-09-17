@@ -9,7 +9,7 @@ LIVE TEXT AS YOU SPEAK
 Text is committed to the field word by word as it firms up, with the still-uncertain tail refined as you keep talking — not a record-then-wait-and-paste flow. After dictation the keyboard hands control back to the keyboard you were using before (optional, on by default), and can run as a movable floating panel.
 
 WORKS OFFLINE, ALWAYS
-The NVIDIA Nemotron speech streaming model (English) is bundled with the app (~700 MB) and runs fully on-device with constant memory — dictation length is not limited. The only permission the app requests is the microphone.
+After a one-time download of the NVIDIA Nemotron speech streaming model (English, ~700 MB) on first launch, everything runs fully on-device with constant memory — dictation length is not limited, and no audio ever leaves your phone. The only permissions the app needs are the microphone and network access for that first download.
 
 ALSO INCLUDED
 • Transcribe audio files: share an audio file with the app to turn a recording into text
@@ -17,7 +17,7 @@ ALSO INCLUDED
 • Material 3 design with dynamic color, light/dark themes, and a built-in speed benchmark
 
 POWERED BY OPEN SOURCE
-Built as a fork of notune/android_transcribe_app (MIT), with a Rust core running transcription through transcribe.cpp. The model is nvidia/nemotron-speech-streaming-en-0.6b (NVIDIA Open Model License), bundled as a Q8_0 GGUF.
+Built as a fork of notune/android_transcribe_app (MIT), with a Rust core running transcription through transcribe.cpp. The model is nvidia/nemotron-speech-streaming-en-0.6b (NVIDIA Open Model License), downloaded on first launch as a Q8_0 GGUF and verified against a pinned checksum.
 
 Source code, issues and contributions:
 https://github.com/space-shell/nemotron-voice-input

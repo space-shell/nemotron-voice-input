@@ -13,10 +13,11 @@ Fork of [notune/android_transcribe_app](https://github.com/notune/android_transc
   lookahead — first text lands ~0.16 s after you start speaking). Stable text
   is committed to the input field as it firms up; the still-revisable tail
   shows as the composing region. No more record → wait → paste.
-- **Single model, no model management**: the bundled (and only) model is
+- **Single model, no model management**: the only model is
   `nvidia/nemotron-speech-streaming-en-0.6b` (Q8_0, ~700 MB, English, natively
-  cased + punctuated). The model-import screen, language picker and translate
-  toggle are gone.
+  cased + punctuated), downloaded once on first launch (pinned URL +
+  sha256-verified) instead of being bundled in the APK. The model-import
+  screen, language picker and translate toggle are gone.
 - **Streaming everywhere**: the IME, the voice-input popup, and the system
   `RecognitionService` (used by other keyboards via `SpeechRecognizer`, now
   with `partialResults`) all run the same pipeline.
@@ -57,10 +58,10 @@ nix develop -c ./gradlew assembleDebug
 # Output: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The first build downloads the ~700 MB Nemotron GGUF from Hugging Face and
-cross-compiles Rust + ggml (~5–10 min). Release builds expect
-`release.keystore` in the project root and `KEY_ALIAS` / `KEY_PASS` /
-`STORE_PASS` in the environment.
+The first build cross-compiles Rust + ggml (~5–10 min); the speech model
+itself is no longer part of the build — it downloads on first app launch.
+Release builds expect `release.keystore` in the project root and
+`KEY_ALIAS` / `KEY_PASS` / `STORE_PASS` in the environment.
 
 Without Nix you need: JDK 17, Android SDK + NDK 28.0.13004108, Rust +
 `aarch64-linux-android` target, `cargo install cargo-ndk`, cmake.
@@ -74,7 +75,7 @@ publishes them to the repo's Releases page (requires the `KEYSTORE_BASE64`,
 
 - `src/` — Rust core (cdylib): engine, streaming voice session, JNI bridges
 - `app/src/main/java/dev/jamesnicholls/nemotronvoice/` — Android Java
-- `model_assets/` — Play Asset Delivery pack for the bundled GGUF
+  (incl. the first-launch model downloader)
 - Transcription runs through
   [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (MIT).
 

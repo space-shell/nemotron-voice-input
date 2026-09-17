@@ -84,17 +84,9 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
-    # The ~700 MB bundled GGUF is checksum-verified on download; cache it
-    # keyed on the checksum list so CI only re-downloads when the model
-    # changes.
-    - name: Cache model assets
-      uses: actions/cache@v4
-      with:
-        path: model_assets/src/main/assets
-        key: model-assets-${{ hashFiles('app/build.gradle.kts') }}
-
     # Branch pushes only validate the build (no signing secrets needed).
-    # Tag pushes build the signed release artifacts.
+    # Tag pushes build the signed release artifacts. The model is not part
+    # of the build anymore — it downloads on first app launch.
     - name: Build Debug (branch validation)
       if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       run: ./gradlew assembleDebug

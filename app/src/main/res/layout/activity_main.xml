@@ -166,17 +166,29 @@
                         android:textColor="?attr/colorOnSurfaceVariant"
                         android:layout_marginBottom="8dp"/>
 
-                     <!-- Native engine warm-up state, updated from Rust. -->
-                     <TextView
-                         android:id="@+id/text_status"
+                     <!-- Native engine warm-up state, updated from Rust;
+                          before the model is downloaded it shows the
+                          download state instead. -->
+                      <TextView
+                          android:id="@+id/text_status"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="@string/status_checking"
+                          android:textAppearance="?attr/textAppearanceBodySmall"
+                          android:textColor="?attr/colorOnSurfaceVariant"
+                          android:layout_marginBottom="8dp"/>
+
+                     <!-- One-time model download (first launch only). -->
+                     <com.google.android.material.button.MaterialButton
+                         android:id="@+id/btn_model_download"
+                         style="@style/Widget.Material3.Button.TonalButton"
                          android:layout_width="match_parent"
                          android:layout_height="wrap_content"
-                         android:text="@string/status_checking"
-                         android:textAppearance="?attr/textAppearanceBodySmall"
-                         android:textColor="?attr/colorOnSurfaceVariant"
-                         android:layout_marginBottom="16dp"/>
-                 </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                         android:text="@string/btn_model_download"
+                         android:visibility="gone"
+                         android:layout_marginBottom="8dp"/>
+                  </LinearLayout>
+              </com.google.android.material.card.MaterialCardView>
 
             <!-- 3. Appearance Card -->
             <com.google.android.material.card.MaterialCardView

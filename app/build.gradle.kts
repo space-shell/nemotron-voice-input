@@ -1,5 +1,3 @@
-import java.io.FileInputStream
-import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -13,8 +11,8 @@ android {
         applicationId = "dev.jamesnicholls.nemotronvoice"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.3.3"
+        versionCode = 25
+        versionName = "0.4.0"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -56,26 +54,6 @@ android {
             useLegacyPackaging = false          // extractNativeLibs=false (16KB safe)
             keepDebugSymbols += "**/*.so"
         }
-    }
-
-    // Play Asset Delivery: large model files go into a separate asset pack
-    // so the base module stays under the 200 MB Play Store limit.
-    assetPacks += listOf(":model_assets")
-}
-
-// For APK builds (assemble/install), asset packs are ignored by AGP so we
-// must include the asset-pack assets as an extra source directory.  For
-// bundle builds the asset pack module handles delivery and we must NOT add
-// the directory here (would cause duplicate-resource errors).
-val isBundle = gradle.startParameter.taskNames.any {
-    it.contains("bundle", ignoreCase = true)
-}
-if (!isBundle) {
-    android.sourceSets.getByName("main") {
-        assets.srcDirs(
-            "src/main/assets",
-            rootProject.file("model_assets/src/main/assets")
-        )
     }
 }
 
@@ -158,94 +136,3 @@ tasks.named("preBuild") {
     dependsOn(cargoNdkBuild)
 }
 
-// ---------------------------------------------------------------------------
-// Model asset download task
-// ---------------------------------------------------------------------------
-
-data class ModelFile(val name: String, val sha256: String)
-
-// The bundled GGUF goes into the model_assets asset pack so the base module
-// stays under the Play Store 200 MB compressed-download limit.
-// nemotron-speech-streaming-en-0.6b: English, natively punctuated+cased,
-// cache-aware streaming FastConformer RNN-T (NVIDIA Open Model License).
-val modelPackFiles = listOf(
-    ModelFile("nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
-        "90d8c89714cd31efc88be62a40c6b2bea57e0cc2063af1ffe2c28f1a228ca110"),
-)
-
-val huggingFaceRepo = "https://huggingface.co/handy-computer/nemotron-speech-streaming-en-0.6b-gguf/resolve/main"
-
-fun downloadToDir(assetsDir: File, files: List<ModelFile>) {
-    assetsDir.mkdirs()
-    files.forEach { model ->
-        val destFile = File(assetsDir, model.name)
-        if (destFile.exists() && model.sha256.isNotEmpty()) {
-            val digest = MessageDigest.getInstance("SHA-256")
-            FileInputStream(destFile).use { fis ->
-                val buf = ByteArray(8192)
-                var read: Int
-                while (fis.read(buf).also { read = it } != -1) {
-                    digest.update(buf, 0, read)
-                }
-            }
-            val hash = digest.digest().joinToString("") { "%02x".format(it) }
-            if (hash == model.sha256) {
-                println("  ✓ ${model.name} already downloaded and verified")
-                return@forEach
-            } else {
-                println("  ✗ ${model.name} checksum mismatch, re-downloading...")
-                destFile.delete()
-            }
-        }
-
-        if (!destFile.exists()) {
-            println("  ↓ Downloading ${model.name}...")
-            val downloadUrl = "$huggingFaceRepo/${model.name}?download=true"
-            val proc = ProcessBuilder("curl", "-L", "-f", "-o", destFile.absolutePath, downloadUrl)
-                .inheritIO()
-                .start()
-            val exitCode = proc.waitFor()
-            if (exitCode != 0) {
-                throw GradleException("Failed to download ${model.name} (curl exit code $exitCode)")
-            }
-
-            if (model.sha256.isNotEmpty()) {
-                val digest = MessageDigest.getInstance("SHA-256")
-                FileInputStream(destFile).use { fis ->
-                    val buf = ByteArray(8192)
-                    var read: Int
-                    while (fis.read(buf).also { read = it } != -1) {
-                        digest.update(buf, 0, read)
-                    }
-                }
-                val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                if (hash != model.sha256) {
-                    throw GradleException(
-                        "Checksum verification failed for ${model.name}:\n" +
-                        "  Expected: ${model.sha256}\n" +
-                        "  Got:      $hash"
-                    )
-                }
-                println("  ✓ ${model.name} verified")
-            }
-        }
-    }
-}
-
-val downloadModels by tasks.registering {
-    description = "Download the built-in speech model (GGUF)"
-    group = "build"
-
-    // The GGUF -> asset pack (separate install-time delivery)
-    val packAssetsDir = rootProject.file("model_assets/src/main/assets/builtin-model")
-
-    outputs.dir(packAssetsDir)
-
-    doLast {
-        downloadToDir(packAssetsDir, modelPackFiles)
-    }
-}
-
-tasks.named("preBuild") {
-    dependsOn(downloadModels)
-}

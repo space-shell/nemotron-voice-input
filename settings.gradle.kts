@@ -16,4 +16,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "NemotronVoiceInput"
 include(":app")
-include(":model_assets")

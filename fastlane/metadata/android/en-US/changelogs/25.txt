@@ -1,0 +1,2 @@
+- the speech model (~700 MB) now downloads on first launch instead of shipping inside the APK: the app is a ~15 MB download and builds entirely from source with no build-time fetches
+- existing installs keep their model — no re-download when upgrading

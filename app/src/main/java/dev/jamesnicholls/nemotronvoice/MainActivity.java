@@ -49,6 +49,9 @@ public class MainActivity extends AppCompatActivity {
     private Button voiceTryButton;
     private Button benchButton;
     private TextView benchResultText;
+    // Whether initNative has run — deferred until the model download
+    // completes on first launch.
+    private boolean nativeInited = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -138,7 +141,57 @@ public class MainActivity extends AppCompatActivity {
             Log.w(TAG, "own package not found", e);
         }
 
-        // Start init
+        // The speech model ships as a first-launch download (~700 MB): only
+        // start the native engine once it's on disk. Everything the engine
+        // powers (benchmark included) stays disabled until then.
+        if (ModelDownloader.isDownloaded(getFilesDir())) {
+            startNativeEngine();
+        } else {
+            statusText.setText(getString(R.string.model_not_downloaded));
+            benchButton.setEnabled(false);
+            bindModelDownload();
+        }
+    }
+
+    /** Wires the one-time model download: progress in the status line, and
+     *  the engine starts as soon as the verified file exists. */
+    private void bindModelDownload() {
+        Button modelDownloadButton = findViewById(R.id.btn_model_download);
+        modelDownloadButton.setVisibility(View.VISIBLE);
+        modelDownloadButton.setOnClickListener(v -> {
+            modelDownloadButton.setEnabled(false);
+            statusText.setText(getString(R.string.model_downloading, 0));
+            new ModelDownloader().downloadAsync(this, new ModelDownloader.Listener() {
+                @Override
+                public void onProgress(int percent) {
+                    runOnUiThread(() ->
+                            statusText.setText(getString(R.string.model_downloading,
+                                    Math.max(percent, 0))));
+                }
+
+                @Override
+                public void onDone(boolean ok, String error) {
+                    runOnUiThread(() -> {
+                        if (ok) {
+                            modelDownloadButton.setVisibility(View.GONE);
+                            benchButton.setEnabled(true);
+                            statusText.setText(getString(R.string.status_checking));
+                            startNativeEngine();
+                        } else {
+                            // Keep the button for a retry; the reason stays
+                            // visible in the status line.
+                            modelDownloadButton.setEnabled(true);
+                            statusText.setText(getString(R.string.model_download_failed, error));
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    private void startNativeEngine() {
+        if (nativeInited) return;
+        nativeInited = true;
         initNative(this);
     }
 
@@ -147,6 +200,11 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         // Re-check on return from the keyboard chooser, settings, or a test run.
         updateVoiceInputStatus();
+        // The model can appear outside this screen's flow (downloaded by an
+        // earlier session that was rotated/killed mid-handoff).
+        if (!nativeInited && ModelDownloader.isDownloaded(getFilesDir())) {
+            startNativeEngine();
+        }
     }
 
     /**
