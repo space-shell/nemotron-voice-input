@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
@@ -645,6 +646,17 @@
                         android:text="@string/btn_benchmark"/>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
+
+            <!-- Version footer -->
+            <TextView
+                android:id="@+id/text_version"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:paddingBottom="8dp"
+                tools:text="v0.3.2"/>
 
         </LinearLayout>
     </ScrollView>

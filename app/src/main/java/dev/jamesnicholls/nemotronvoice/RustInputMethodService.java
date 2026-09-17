@@ -64,6 +64,11 @@ public class RustInputMethodService extends InputMethodService {
     // Auto-record requested while the model was still loading; fires once
     // "Ready" arrives (and the window is still shown).
     private boolean pendingAutoStart = false;
+    // Return key pressed mid-recording: stop first, then send (perform the
+    // editor's enter action) once the final text has been committed — the
+    // finalize is async, so sending immediately would fire before the last
+    // words land in the field.
+    private boolean pendingSend = false;
     private boolean pendingSwitchBack = false;
     private String lastStatus = "Initializing...";
     // Key repeat settings
@@ -177,14 +182,16 @@ public class RustInputMethodService extends InputMethodService {
             switchKeyboardButton = view.findViewById(R.id.ime_switch_keyboard);
 
             // Minimal mode (auto return to previous keyboard, the default):
-            // the editing keys and bottom hint are never reached — the
-            // keyboard closes as soon as dictation ends — so show only the
-            // switch-back key.
+            // the editing keys are never reached — the keyboard closes as
+            // soon as dictation ends — so hide backspace and space and show
+            // only the switch key (left) and the return key (right), which
+            // stops the dictation and sends the text (e.g. a WhatsApp
+            // message).
             viewIsMinimal = isSwitchBackEnabled();
             if (viewIsMinimal) {
                 backspaceButton.setVisibility(View.GONE);
                 spaceButton.setVisibility(View.GONE);
-                enterButton.setVisibility(View.GONE);
+                view.findViewById(R.id.ime_row_spacer).setVisibility(View.VISIBLE);
                 hintView.setVisibility(View.GONE);
             }
 
@@ -258,34 +265,7 @@ public class RustInputMethodService extends InputMethodService {
                 return false;
             });
 
-            enterButton.setOnClickListener(v -> {
-                InputConnection ic = getCurrentInputConnection();
-                if (ic != null) {
-                    android.view.inputmethod.EditorInfo editorInfo = getCurrentInputEditorInfo();
-                    if (editorInfo == null) {
-                        ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER));
-                        ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER));
-                        return;
-                    }
-                    int imeOptions = editorInfo.imeOptions;
-                    int action = imeOptions & android.view.inputmethod.EditorInfo.IME_MASK_ACTION;
-                    boolean noEnterAction = (imeOptions & android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0;
-
-                    // If the editor flags IME_FLAG_NO_ENTER_ACTION (e.g. multi-line fields in
-                    // messaging apps like Signal), or if there's no meaningful action, insert a
-                    // newline. Otherwise perform the editor action (Go, Search, Send, etc.).
-                    if (!noEnterAction && (
-                            action == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
-                            action == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH ||
-                            action == android.view.inputmethod.EditorInfo.IME_ACTION_SEND ||
-                            action == android.view.inputmethod.EditorInfo.IME_ACTION_NEXT)) {
-                        ic.performEditorAction(action);
-                    } else {
-                        ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER));
-                        ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER));
-                    }
-                }
-            });
+            enterButton.setOnClickListener(v -> onReturnKey());
 
             recordContainer.setOnClickListener(v -> {
                 if (!recordContainer.isEnabled()) return;
@@ -335,6 +315,7 @@ public class RustInputMethodService extends InputMethodService {
                 }
                 committedBase = "";
                 lastTentative = "";
+                pendingSend = false;
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
@@ -468,12 +449,62 @@ public class RustInputMethodService extends InputMethodService {
      *  competing audio (if enabled), opens the mic, and flips the UI into
      *  the recording state. */
     private void beginRecording() {
+        pendingSend = false;
         if (isPauseAudioEnabled()) {
             audioPauser.request(this);
             pauseAudioActive = true;
         }
         startRecording();
         updateRecordButtonUI(true);
+    }
+
+    /** The return key: mid-recording it stops the dictation and sends the
+     *  text once it has landed (the finalize is async); otherwise it acts
+     *  as a plain enter — e.g. IME_ACTION_SEND in WhatsApp sends the
+     *  message. */
+    private void onReturnKey() {
+        if (isRecording) {
+            pendingSend = true;
+            stopRecording();
+            if (pauseAudioActive) {
+                audioPauser.abandon(this);
+                pauseAudioActive = false;
+            }
+            updateRecordButtonUI(false);
+        } else {
+            performEnterAction();
+        }
+    }
+
+    /** Performs the editor's enter action (Go/Search/Send/Next) when the
+     *  field asks for one, else inserts a newline via key events. */
+    private void performEnterAction() {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            android.view.inputmethod.EditorInfo editorInfo = getCurrentInputEditorInfo();
+            if (editorInfo == null) {
+                ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER));
+                ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER));
+                return;
+            }
+            int imeOptions = editorInfo.imeOptions;
+            int action = imeOptions & android.view.inputmethod.EditorInfo.IME_MASK_ACTION;
+            boolean noEnterAction = (imeOptions & android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0;
+
+            // If the editor flags IME_FLAG_NO_ENTER_ACTION (e.g. multi-line fields in
+            // messaging apps like Signal), or if there's no meaningful action, insert a
+            // newline. Otherwise perform the editor action (Go, Search, Send, etc.).
+            if (!noEnterAction && (
+                    action == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                    action == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH ||
+                    action == android.view.inputmethod.EditorInfo.IME_ACTION_SEND ||
+                    action == android.view.inputmethod.EditorInfo.IME_ACTION_NEXT)) {
+                ic.performEditorAction(action);
+            } else {
+                ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER));
+                ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER));
+            }
+        }
     }
 
     private void updateRecordButtonUI(boolean recording) {
@@ -553,6 +584,7 @@ public class RustInputMethodService extends InputMethodService {
                 }
                 committedBase = "";
                 lastTentative = "";
+                pendingSend = false;
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
                 updateRecordButtonUI(false);
@@ -655,6 +687,13 @@ public class RustInputMethodService extends InputMethodService {
                     audioPauser.abandon(this);
                     pauseAudioActive = false;
                 }
+                if (pendingSend) {
+                    // Nothing recognized, but the return key was pressed:
+                    // still perform the enter action — the user may be
+                    // sending text they typed themselves.
+                    pendingSend = false;
+                    performEnterAction();
+                }
                 if (pendingSwitchBack || isSwitchBackEnabled()) {
                     // Nothing recognized still counts as "dictation ended":
                     // with auto switch-back, return to the previous keyboard.
@@ -687,7 +726,8 @@ public class RustInputMethodService extends InputMethodService {
                 }
                 ic.commitText(" ", 1);
 
-                if (!pendingSwitchBack && new File(getFilesDir(), "select_transcription").exists()) {
+                if (!pendingSwitchBack && !pendingSend
+                        && new File(getFilesDir(), "select_transcription").exists()) {
                     android.view.inputmethod.ExtractedText et = ic.getExtractedText(
                             new android.view.inputmethod.ExtractedTextRequest(), 0);
                     if (et != null) {
@@ -724,6 +764,10 @@ public class RustInputMethodService extends InputMethodService {
                     Log.w(TAG, "final transcript disagrees with streamed text; "
                             + "deferred commit skipped");
                 }
+                // No live editor to send to; a queued return fires into the
+                // void, so drop it rather than surprise-send on a later
+                // refocus.
+                pendingSend = false;
             }
             committedBase = "";
             lastTentative = "";
@@ -733,6 +777,13 @@ public class RustInputMethodService extends InputMethodService {
             }
             updateRecordButtonUI(false);
             if (statusView != null) statusView.setText("Tap to Record");
+            // Return key pressed mid-recording: the text has landed, now
+            // perform the enter action (e.g. IME_ACTION_SEND) before any
+            // switch-back hands the keyboard away.
+            if (pendingSend) {
+                pendingSend = false;
+                performEnterAction();
+            }
             // After a successful transcription, hand the keyboard back to
             // whatever the user was typing on before (unless they chose to
             // keep this keyboard open) — or immediately when they hit the

@@ -126,6 +126,15 @@
             android:layout_marginEnd="8dp"
             android:contentDescription="Space"/>
 
+        <!-- Shown instead of the space key in minimal mode so the return
+             key sits at the bottom-right corner. -->
+        <Space
+            android:id="@+id/ime_row_spacer"
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1"
+            android:visibility="gone"/>
+
         <ImageView
             android:id="@+id/ime_enter"
             android:layout_width="64dp"

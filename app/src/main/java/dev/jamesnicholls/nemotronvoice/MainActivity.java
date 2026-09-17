@@ -129,6 +129,15 @@ public class MainActivity extends AppCompatActivity {
         // Initial check
         updateVoiceInputStatus();
 
+        // Version footer
+        try {
+            String versionName = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0).versionName;
+            ((TextView) findViewById(R.id.text_version)).setText("v" + versionName);
+        } catch (PackageManager.NameNotFoundException e) {
+            Log.w(TAG, "own package not found", e);
+        }
+
         // Start init
         initNative(this);
     }
