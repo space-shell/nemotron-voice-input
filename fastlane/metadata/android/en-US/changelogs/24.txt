@@ -1,0 +1,3 @@
+- return key on the voice keyboard: stops the dictation and sends the text (e.g. sends a WhatsApp message), also present in the minimal key row
+- version number shown at the bottom of the settings screen
+- drop the unused required GL ES 3.2 feature so more devices can install
