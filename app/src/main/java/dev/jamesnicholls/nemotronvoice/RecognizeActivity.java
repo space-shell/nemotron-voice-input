@@ -30,6 +30,10 @@ public class RecognizeActivity extends AppCompatActivity {
 
     private TextView status;
     private boolean isRecording = false;
+    // True between onCreate and the engine's first "Ready": capture must not
+    // start while the model loads (cold popup). The loader thread spawned by
+    // initNative drives the transition via onStatusUpdate.
+    private boolean pendingStart = false;
     private MicLevelView micLevel;
     private final AudioFocusPauser audioPauser = new AudioFocusPauser();
     private boolean pauseAudioActive = false;
@@ -48,6 +52,7 @@ public class RecognizeActivity extends AppCompatActivity {
 
         findViewById(R.id.btn_close).setOnClickListener(v -> {
             // discard current recording
+            pendingStart = false;
             if (isRecording) {
                 isRecording = false;
                 cancelRecording();   // new native method
@@ -71,6 +76,18 @@ public class RecognizeActivity extends AppCompatActivity {
         }
 
         initNative(this);
+        // Defer capture until the engine reports "Ready". Starting
+        // immediately on a cold process shows a live mic meter and
+        // "Listening" while the consumer thread is actually still waiting
+        // for the model — and if that load wedges, endpointing flips the
+        // popup to "Processing" forever (#16).
+        pendingStart = true;
+        status.setText("Loading model…");
+    }
+
+    /** Start capture once the engine is ready (deferred onCreate path or
+     *  the "Ready" status callback). */
+    private void beginListening() {
         isRecording = true;
         status.setText("Listening... (Tap to stop)");
         if (isPauseAudioEnabled()) {
@@ -105,8 +122,9 @@ public class RecognizeActivity extends AppCompatActivity {
         // recording invisibly in the background and never reappear. Discard
         // and close so the next mic tap starts fresh. (Background recording
         // is a keyboard-only feature; a popup must not record unseen.)
-        if (isRecording && !isFinishing()) {
+        if ((isRecording || pendingStart) && !isFinishing()) {
             isRecording = false;
+            pendingStart = false;
             try { cancelRecording(); } catch (Throwable t) { /* ignore */ }
             if (pauseAudioActive) {
                 audioPauser.abandon(this);
@@ -130,6 +148,11 @@ public class RecognizeActivity extends AppCompatActivity {
     // Called from Rust
     public void onStatusUpdate(String s) {
         runOnUiThread(() -> {
+            if ("Ready".equals(s) && pendingStart) {
+                pendingStart = false;
+                if (!isFinishing()) beginListening();
+                return;
+            }
             final String shown;
             if ("Ready".equals(s)) {
                 // The model-ready status can arrive after recording started.
@@ -137,6 +160,7 @@ public class RecognizeActivity extends AppCompatActivity {
             } else if ("Listening...".equals(s)) {
                 shown = "Listening... (Tap to stop)";
             } else {
+                if (s != null && s.startsWith("Error")) pendingStart = false;
                 shown = s;
             }
             status.setText(shown);

@@ -42,6 +42,12 @@ public class VoiceRecognitionService extends RecognitionService {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Callback mCallback;
+    private boolean modelReady = false;
+    // startListening deferred while the model loads (cold bind); fired from
+    // onStatusUpdate("Ready"). Without this the keyboard shows "listening"
+    // while the consumer thread is still waiting on the load, and a wedged
+    // load hangs the recognition at "processing" forever (#16).
+    private boolean startDeferred = false;
 
     @Override
     public void onCreate() {
@@ -64,6 +70,15 @@ public class VoiceRecognitionService extends RecognitionService {
             return;
         }
 
+        if (!modelReady) {
+            // Engine still loading (cold bind): defer capture until "Ready".
+            // Starting now would give the keyboard a live mic meter while
+            // the consumer thread is still waiting on the model load — and
+            // endpointing can finalize before any audio was ever processed.
+            startDeferred = true;
+            return;
+        }
+        startDeferred = false;
         try {
             startListening(this);
         } catch (Throwable t) {
@@ -83,6 +98,7 @@ public class VoiceRecognitionService extends RecognitionService {
 
     @Override
     protected void onCancel(Callback callback) {
+        startDeferred = false;
         try {
             cancelNative();
         } catch (Throwable t) {
@@ -92,6 +108,7 @@ public class VoiceRecognitionService extends RecognitionService {
 
     @Override
     public void onDestroy() {
+        startDeferred = false;
         try {
             destroyNative();
         } catch (Throwable t) {
@@ -172,9 +189,30 @@ public class VoiceRecognitionService extends RecognitionService {
         });
     }
 
-    /** Invoked by the shared engine loader during model warm-up; UI-less here. */
+    /** Invoked by the shared engine loader during model warm-up; UI-less
+     *  here, but drives the deferred start once the model is ready. */
     public void onStatusUpdate(String status) {
         Log.d(TAG, "engine: " + status);
+        mainHandler.post(() -> {
+            if (status == null) return;
+            if (status.startsWith("Ready")) {
+                modelReady = true;
+                if (startDeferred && mCallback != null) {
+                    startDeferred = false;
+                    try {
+                        startListening(this);
+                    } catch (Throwable t) {
+                        Log.e(TAG, "deferred startListening failed", t);
+                        safeError(SpeechRecognizer.ERROR_CLIENT);
+                    }
+                }
+            } else if (status.startsWith("Error") && startDeferred) {
+                // Load failed while a recognition was deferred — surface the
+                // error instead of leaving the keyboard waiting forever.
+                startDeferred = false;
+                safeError(SpeechRecognizer.ERROR_SERVER);
+            }
+        });
     }
 
     private void safeError(int errorCode) {
