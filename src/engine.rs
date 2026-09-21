@@ -222,11 +222,24 @@ pub fn ensure_loaded_from_thread(
             *state = LoadState::Loading;
             drop(state);
 
-            let result = if let Ok(mut env) = jvm.attach_current_thread() {
-                do_load(&mut env, target_ref.as_obj())
-            } else {
-                Err("Failed to attach JNI thread".to_string())
-            };
+            // A panic in do_load must still resolve the state machine: the
+            // Loading flag is already published and nothing else would ever
+            // flip it, so every future recording would wait on the condvar
+            // forever (recognizer surfaces hang at "Processing" until the
+            // process dies, #16). Catch the unwind and report it as a
+            // normal load failure so waiters error out and the next start
+            // retries.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(mut env) = jvm.attach_current_thread() {
+                    do_load(&mut env, target_ref.as_obj())
+                } else {
+                    Err("Failed to attach JNI thread".to_string())
+                }
+            }))
+            .unwrap_or_else(|_| {
+                log::error!("model loader panicked; reporting as load failure");
+                Err("model loader panicked".to_string())
+            });
 
             let mut state = lock.lock().unwrap();
             match &result {
