@@ -1,0 +1,2 @@
+- the system speech-to-text provider (keyboards like Gboard/SwiftKey and automation apps using the SpeechRecognizer API) works again — it previously froze the app on first use
+- fix: results from a cancelled or just-finished recording can no longer leak into the next one when you re-record immediately
