@@ -39,6 +39,9 @@ const SILENCE_MS: u64 = 1500;
 const NO_SPEECH_TIMEOUT_MS: u64 = 7000;
 /// Throttle interval for `rmsChanged` UI callbacks.
 const LEVEL_UPDATE_MS: u64 = 50;
+/// Grace period before a finalized-but-undelivered recognition is reported
+/// as a stall error instead of leaving the caller waiting forever (#16).
+const STALL_DELIVERY_MS: u64 = 30_000;
 
 // Mirror of android.speech.SpeechRecognizer error codes we report.
 const ERROR_AUDIO: i32 = 3;
@@ -54,6 +57,9 @@ struct Endpoint {
     last_level_sent: Mutex<Instant>,
     speech_started: AtomicBool,
     finalized: AtomicBool,
+    /// Set when the consumer's delivery closure ran at all — the stall
+    /// watchdog's off-switch (a stale-swallowed delivery still counts).
+    delivered: AtomicBool,
     started_at: Instant,
     jvm: Arc<jni::JavaVM>,
     target: GlobalRef,
@@ -158,6 +164,7 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
         last_level_sent: Mutex::new(now),
         speech_started: AtomicBool::new(false),
         finalized: AtomicBool::new(false),
+        delivered: AtomicBool::new(false),
         started_at: now,
         jvm: jvm.clone(),
         target,
@@ -219,6 +226,10 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
                 cancelled.clone(),
                 overflow.clone(),
                 move |env, obj, result| {
+                    // The consumer reached delivery at all — clears the stall
+                    // watchdog (#16) even when the result is swallowed as
+                    // stale below.
+                    deliver_shared.delivered.store(true, Ordering::SeqCst);
                     // Swallow everything if a newer session took over or this
                     // one was cancelled — no stale callbacks. (Note: the
                     // `finalized` flag is already true here — finalize() sets
@@ -423,6 +434,28 @@ fn finalize(
     // finalize → delivery closure fires with the final text.
     *stream.lock().unwrap() = None;
     *tx.lock().unwrap() = None;
+
+    // Delivery watchdog (#16): if the consumer never delivers (wedged load
+    // or native inference), the caller's UI would wait forever. Surface a
+    // server error after a grace period instead. The wedged thread itself
+    // cannot be saved — recovery remains an app restart — but the keyboard
+    // gets a real error rather than an eternal "processing". Cancel and
+    // session-takeover paths clear SESSION, so is_current_session gates
+    // this off for them.
+    let wd = shared.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(STALL_DELIVERY_MS));
+        if !wd.delivered.load(Ordering::SeqCst) && is_current_session(&wd) {
+            log::error!(
+                "no recognition result after {}ms; reporting stall",
+                STALL_DELIVERY_MS
+            );
+            if let Ok(mut env) = wd.jvm.attach_current_thread() {
+                call_error(&mut env, wd.target.as_obj(), ERROR_SERVER);
+            }
+            clear_session(&wd);
+        }
+    });
 }
 
 /// True while `shared` is still the session installed in SESSION.

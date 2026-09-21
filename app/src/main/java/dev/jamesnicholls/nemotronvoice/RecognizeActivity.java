@@ -37,6 +37,20 @@ public class RecognizeActivity extends AppCompatActivity {
     private MicLevelView micLevel;
     private final AudioFocusPauser audioPauser = new AudioFocusPauser();
     private boolean pauseAudioActive = false;
+    // Set between stop and the final transcript; a watchdog turns an engine
+    // wedge into a visible error instead of infinite "Processing" (#16).
+    private boolean awaitingResult = false;
+    private static final long STALL_TIMEOUT_MS = 30_000; // ms
+    private final Runnable stallRunnable = () -> {
+        if (!awaitingResult || isFinishing()) return;
+        awaitingResult = false;
+        Log.e(TAG, "no final transcript after " + STALL_TIMEOUT_MS + "ms; reporting stall");
+        status.setText("Error: transcription stalled — close and retry");
+        // Abandon the stream so session flags stay consistent. The wedged
+        // native consumer stays wedged (recovery is an app restart, #16),
+        // but the popup stops pretending to work.
+        try { cancelRecording(); } catch (Throwable t) { /* ignore */ }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -103,6 +117,11 @@ public class RecognizeActivity extends AppCompatActivity {
         isRecording = false;
         status.setText("Processing...");
         stopRecording();
+        // Watchdog: the final transcript normally lands in well under a
+        // second; if nothing arrives the engine wedged (#16) — say so
+        // instead of hanging at "Processing" forever.
+        awaitingResult = true;
+        status.postDelayed(stallRunnable, STALL_TIMEOUT_MS);
         if (pauseAudioActive) {
             audioPauser.abandon(this);
             pauseAudioActive = false;
@@ -175,6 +194,8 @@ public class RecognizeActivity extends AppCompatActivity {
     // Called from Rust – keep same method name as IME for code reuse
     public void onTextTranscribed(String text) {
         runOnUiThread(() -> {
+            awaitingResult = false;
+            status.removeCallbacks(stallRunnable);
             if (text == null || text.trim().isEmpty()) {
                 // Nothing was recognized (e.g. auto-stop after silence only).
                 setResult(Activity.RESULT_CANCELED);
