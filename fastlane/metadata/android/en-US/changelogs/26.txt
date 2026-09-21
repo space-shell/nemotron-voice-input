@@ -1,0 +1,2 @@
+- fix: voice input invoked after a period of inactivity (keyboard STT buttons, Tasker) could hang at "processing" forever — capture now waits for the model to finish loading and shows the real status instead of a fake "listening"
+- a stalled transcription now reports an explicit error after 30 s instead of spinning forever
