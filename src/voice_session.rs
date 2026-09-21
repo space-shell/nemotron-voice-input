@@ -247,7 +247,7 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
             let cancelled = state.cancelled.clone();
             let overflow = state.overflow.clone();
             std::thread::spawn(move || {
-                spawn_stream_consumer(
+                run_stream_consumer(
                     jvm,
                     target_ref,
                     rx,
@@ -319,7 +319,12 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
 /// Same panic-hardening as `engine::transcribe_shared`: a panic anywhere in
 /// the engine stack surfaces as a normal error instead of freezing every
 /// later one.
-pub fn spawn_stream_consumer<F>(
+///
+/// Runs on the CALLING thread and blocks for the entire recording — callers
+/// must invoke it on a dedicated thread. The name used to say "spawn", which
+/// hid the blocking contract and led to the RecognitionService running it
+/// inline on its main looper (#1).
+pub fn run_stream_consumer<F>(
     jvm: Arc<jni::JavaVM>,
     target_ref: GlobalRef,
     rx: crossbeam_channel::Receiver<Vec<f32>>,

@@ -6,7 +6,7 @@
 //! "tap to stop" control via `voice_session`), a `RecognitionService` has no UI of its
 //! own: the calling keyboard expects *us* to decide when the user has finished speaking.
 //! So this module adds trailing-silence endpointing on top of the same streaming
-//! pipeline (`voice_session::spawn_stream_consumer`): audio is fed to the model live,
+//! pipeline (`voice_session::run_stream_consumer`): audio is fed to the model live,
 //! partial hypotheses are delivered as `partialResults`, and finalisation (explicit
 //! `stopListening`, silence, or no-speech timeout) just ends the stream. The previous
 //! 60 s hard cap is gone — the streaming model has constant memory.
@@ -21,7 +21,7 @@ use jni::JNIEnv;
 use once_cell::sync::Lazy;
 
 use crate::engine;
-use crate::voice_session::{spawn_stream_consumer, SendStream};
+use crate::voice_session::{run_stream_consumer, SendStream};
 
 // --- Endpointing / VAD tuning -------------------------------------------------
 // These are deliberately simple heuristics on the smoothed mic level. Mic gain
@@ -198,7 +198,7 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
         buffer_size: cpal::BufferSize::Default,
     };
 
-    // Capture → consumer channel. The consumer (spawn_stream_consumer) owns
+    // Capture → consumer channel. The consumer (run_stream_consumer) owns
     // the streaming session; dropping the sender finalises it.
     let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
     let tx_holder: Arc<Mutex<Option<crossbeam_channel::Sender<Vec<f32>>>>> =
@@ -216,46 +216,73 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
 
     match stream {
         Ok(s) => {
+            // Install the session before anything can observe the stream:
+            // a stop or cancel arriving between play() and installation
+            // would otherwise find no target to act on (#1).
+            *SESSION.lock().unwrap() = Some(Session {
+                shared: shared.clone(),
+                stream: stream_holder.clone(),
+                tx: tx_holder.clone(),
+                cancelled: cancelled.clone(),
+            });
+
             // Deliver the stream outcome as RecognitionService callbacks.
+            // run_stream_consumer blocks for the whole recording, and this
+            // JNI entry runs on the service's main looper — the consumer
+            // MUST run on its own thread. Inline, main froze forever in the
+            // recv_timeout loop: the mic never played (s.play() sat below
+            // the call), SESSION was never installed, and the service ANR'd
+            // (#1).
             let deliver_shared = shared.clone();
             let deliver_cancelled = cancelled.clone();
-            spawn_stream_consumer(
-                jvm.clone(),
-                shared.target.clone(),
-                rx,
-                cancelled.clone(),
-                overflow.clone(),
-                move |env, obj, result| {
-                    // The consumer reached delivery at all — clears the stall
-                    // watchdog (#16) even when the result is swallowed as
-                    // stale below.
-                    deliver_shared.delivered.store(true, Ordering::SeqCst);
-                    // Swallow everything if a newer session took over or this
-                    // one was cancelled — no stale callbacks. (Note: the
-                    // `finalized` flag is already true here — finalize() sets
-                    // it before dropping the sender — so it is not a valid
-                    // staleness signal for delivery.)
-                    if deliver_cancelled.load(Ordering::SeqCst)
-                        || !is_current_session(&deliver_shared)
-                    {
-                        return;
-                    }
-                    match result {
-                        Ok(text) if !text.is_empty() => {
-                            if deliver_shared.speech_started.load(Ordering::SeqCst) {
-                                call_void(env, obj, "onEndOfSpeech");
+            let deliver_stream = stream_holder.clone();
+            let deliver_tx = tx_holder.clone();
+            let deliver_overflow = overflow.clone();
+            std::thread::spawn(move || {
+                run_stream_consumer(
+                    jvm.clone(),
+                    deliver_shared.target.clone(),
+                    rx,
+                    deliver_cancelled.clone(),
+                    deliver_overflow,
+                    move |env, obj, result| {
+                        // The consumer reached delivery at all — clears the stall
+                        // watchdog (#16) even when the result is swallowed as
+                        // stale below.
+                        deliver_shared.delivered.store(true, Ordering::SeqCst);
+                        // Swallow everything if a newer session took over or this
+                        // one was cancelled — no stale callbacks. (Note: the
+                        // `finalized` flag is already true here — finalize() sets
+                        // it before dropping the sender — so it is not a valid
+                        // staleness signal for delivery.)
+                        if deliver_cancelled.load(Ordering::SeqCst)
+                            || !is_current_session(&deliver_shared)
+                        {
+                            return;
+                        }
+                        match result {
+                            Ok(text) if !text.is_empty() => {
+                                if deliver_shared.speech_started.load(Ordering::SeqCst) {
+                                    call_void(env, obj, "onEndOfSpeech");
+                                }
+                                call_results(env, obj, &text);
                             }
-                            call_results(env, obj, &text);
+                            Ok(_) => call_error(env, obj, ERROR_NO_MATCH),
+                            Err(e) => {
+                                log::error!("streaming recognition failed: {}", e);
+                                // The consumer is gone — nothing will ever
+                                // drain the audio. Stop capture too, or the
+                                // mic keeps running (indicator on, audio
+                                // discarded) until endpointing fires (#13).
+                                *deliver_stream.lock().unwrap() = None;
+                                *deliver_tx.lock().unwrap() = None;
+                                call_error(env, obj, ERROR_SERVER);
+                            }
                         }
-                        Ok(_) => call_error(env, obj, ERROR_NO_MATCH),
-                        Err(e) => {
-                            log::error!("streaming recognition failed: {}", e);
-                            call_error(env, obj, ERROR_SERVER);
-                        }
-                    }
-                    clear_session(&deliver_shared);
-                },
-            );
+                        clear_session(&deliver_shared);
+                    },
+                );
+            });
 
             s.play().ok();
             *stream_holder.lock().unwrap() = Some(SendStream(s));
@@ -276,13 +303,6 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
     let mon_overflow = overflow.clone();
     std::thread::spawn(move || {
         endpoint_monitor(mon_shared, mon_stream, mon_tx, mon_overflow)
-    });
-
-    *SESSION.lock().unwrap() = Some(Session {
-        shared,
-        stream: stream_holder,
-        tx: tx_holder,
-        cancelled: cancelled.clone(),
     });
 }
 
