@@ -238,6 +238,11 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
             let deliver_stream = stream_holder.clone();
             let deliver_tx = tx_holder.clone();
             let deliver_overflow = overflow.clone();
+            // Session identity for the partials inside the consumer: a
+            // previous session still draining must not push its stale
+            // partials into this one's callbacks (#4, same guard the
+            // delivery closure applies to finals).
+            let current_shared = shared.clone();
             std::thread::spawn(move || {
                 run_stream_consumer(
                     jvm.clone(),
@@ -245,6 +250,7 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
                     rx,
                     deliver_cancelled.clone(),
                     deliver_overflow,
+                    move || is_current_session(&current_shared),
                     move |env, obj, result| {
                         // The consumer reached delivery at all — clears the stall
                         // watchdog (#16) even when the result is swallowed as
