@@ -10,7 +10,7 @@
 //! inference falls behind the bounded channel fills and the session ends
 //! with an explicit error instead of silently dropping audio.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -70,6 +70,11 @@ pub struct VoiceSessionState {
     /// Set by the capture callback when the channel is full (consumer can't
     /// keep up). The session ends with an error.
     pub overflow: Arc<AtomicBool>,
+    /// Generation of the current recording, bumped by every start_recording.
+    /// Consumer and auto-stop monitor threads capture their generation and
+    /// check it before upcalling, so a previous session finishing late can
+    /// never deliver partials, finals, or auto-stops into a newer one (#4).
+    pub generation: Arc<AtomicU64>,
 }
 
 fn notify_status(env: &mut JNIEnv, obj: &JObject, msg: &str) {
@@ -130,6 +135,7 @@ pub fn init_session(env: JNIEnv, target: JObject) -> VoiceSessionState {
         feed_tx: None,
         cancelled: Arc::new(AtomicBool::new(false)),
         overflow: Arc::new(AtomicBool::new(false)),
+        generation: Arc::new(AtomicU64::new(0)),
     };
 
     // Load engine in background
@@ -168,12 +174,15 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
         buffer_size: cpal::BufferSize::Default,
     };
 
-    // End any previous session's monitor, then arm a fresh flag.
+    // End any previous session's monitor, then arm a fresh flag. Bumping the
+    // generation orphans any previous consumer: its upcalls become no-ops
+    // instead of landing in this new session (#4).
     state.session_active.store(false, Ordering::SeqCst);
     let session_active = Arc::new(AtomicBool::new(true));
     state.session_active = session_active.clone();
     state.cancelled = Arc::new(AtomicBool::new(false));
     state.overflow = Arc::new(AtomicBool::new(false));
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     let endpoint = if auto_stop {
         Some(Arc::new(Endpointing {
@@ -246,19 +255,38 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
             let target_ref = state.target_ref.clone();
             let cancelled = state.cancelled.clone();
             let overflow = state.overflow.clone();
+            let gen_ctr = state.generation.clone();
+            let gen_ctr_deliver = state.generation.clone();
             std::thread::spawn(move || {
                 run_stream_consumer(
                     jvm,
                     target_ref,
                     rx,
-                    cancelled,
+                    cancelled.clone(),
                     overflow,
-                    |env, obj, result| match result {
-                        Ok(text) => {
-                            notify_status(env, obj, "Ready");
-                            notify_text(env, obj, &text);
+                    move || gen_ctr.load(Ordering::SeqCst) == generation,
+                    move |env, obj, result| {
+                        // A cancelled session delivers nothing: the cancel
+                        // path already reset the UI synchronously, and the
+                        // late Ok("") used to overwrite the "Canceled"
+                        // status ~100 ms later (#4).
+                        if cancelled.load(Ordering::SeqCst) {
+                            return;
                         }
-                        Err(msg) => notify_status(env, obj, &format!("Error: {}", msg)),
+                        // Superseded by a newer recording: a stale final
+                        // would run the result/empty branch inside the live
+                        // session, resetting its committedBase and UI
+                        // mid-flight (#4).
+                        if gen_ctr_deliver.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
+                        match result {
+                            Ok(text) => {
+                                notify_status(env, obj, "Ready");
+                                notify_text(env, obj, &text);
+                            }
+                            Err(msg) => notify_status(env, obj, &format!("Error: {}", msg)),
+                        }
                     },
                 );
             });
@@ -270,6 +298,7 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
             if let Some(ep) = endpoint {
                 let jvm = state.jvm.clone();
                 let target_ref = state.target_ref.clone();
+                let gen_ctr_monitor = state.generation.clone();
                 let started_at = Instant::now();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_millis(100));
@@ -285,8 +314,13 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
                                 >= Duration::from_millis(AUTO_STOP_NO_SPEECH_MS));
                     if done {
                         // Claim the session so a simultaneous manual stop and
-                        // this monitor can't both fire.
-                        if session_active.swap(false, Ordering::SeqCst) {
+                        // this monitor can't both fire — and only ever stop
+                        // OUR session: a newer recording bumps the
+                        // generation, and its silence/speech tracking is not
+                        // ours to act on (#4).
+                        if gen_ctr_monitor.load(Ordering::SeqCst) == generation
+                            && session_active.swap(false, Ordering::SeqCst)
+                        {
                             if let Ok(mut env) = jvm.attach_current_thread() {
                                 let _ = env.call_method(
                                     target_ref.as_obj(),
@@ -320,6 +354,12 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
 /// the engine stack surfaces as a normal error instead of freezing every
 /// later one.
 ///
+/// `is_current` gates every upcall from inside the session (live partials):
+/// it must return false once this recording is no longer the current one, so
+/// a consumer still draining an old session cannot push stale partials into
+/// a newer one (#4). The final `deliver` should get the same guard from its
+/// caller.
+///
 /// Runs on the CALLING thread and blocks for the entire recording — callers
 /// must invoke it on a dedicated thread. The name used to say "spawn", which
 /// hid the blocking contract and led to the RecognitionService running it
@@ -330,12 +370,13 @@ pub fn run_stream_consumer<F>(
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     cancelled: Arc<AtomicBool>,
     overflow: Arc<AtomicBool>,
+    is_current: impl Fn() -> bool + Send + 'static,
     deliver: F,
 ) where
     F: FnOnce(&mut JNIEnv, &JObject, Result<String, String>) + Send + 'static,
 {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stream_session_body(&jvm, &target_ref, rx, &cancelled, &overflow)
+        stream_session_body(&jvm, &target_ref, rx, &cancelled, &overflow, &is_current)
     }))
     .unwrap_or_else(|_| {
         log::error!("streaming consumer panicked; reporting as error");
@@ -355,6 +396,7 @@ fn stream_session_body(
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     cancelled: &Arc<AtomicBool>,
     overflow: &Arc<AtomicBool>,
+    is_current: &dyn Fn() -> bool,
 ) -> Result<String, String> {
     let mut env = jvm
         .attach_current_thread()
@@ -426,7 +468,9 @@ fn stream_session_body(
                     .unwrap_or(true);
                 if changed {
                     last_partial = Some((text.committed.clone(), text.tentative.clone()));
-                    notify_partial(&mut env, obj, &text.committed, &text.tentative);
+                    if is_current() {
+                        notify_partial(&mut env, obj, &text.committed, &text.tentative);
+                    }
                 }
             }
         }
