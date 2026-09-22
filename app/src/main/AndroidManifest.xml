@@ -2,9 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- RECORD_AUDIO for capture; INTERNET solely for the one-time model
-         download on first launch — recognition itself never uses it. -->
+         download on first launch — recognition itself never uses it.
+         FOREGROUND_SERVICE(_MICROPHONE) keep the :ime process at foreground
+         service level while a dictation runs in the background (#8): without
+         it the process drops to cached, Samsung's app freezer freezes it
+         mid-recording, and Android 14+ may silence background mic capture. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Package visibility (Android 11+): lets resolveActivity()/queryIntentActivities()
          for the speech intent see other handlers, so MainActivity can tell whether this
@@ -90,6 +96,16 @@
                 android:name="android.speech"
                 android:resource="@xml/recognition_service" />
         </service>
+
+        <!-- Microphone foreground service: runs in the :ime process for the
+             lifetime of a dictation, keeping the process freeze-ineligible
+             and exempt from background-mic silencing while the recording
+             continues after the keyboard hides (#8). -->
+        <service
+            android:name=".MicForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:process=":ime" />
 
         <!-- IME Service -->
         <service
