@@ -47,11 +47,23 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_TranscribeFil
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
 
-    let vm = env.get_java_vm().expect("Failed to get JavaVM");
+    // JNI setup failure must not abort the process (#14): log-and-return,
+    // leaving the state slot empty (later calls find None and no-op).
+    let vm = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            log::error!("TranscribeFile init: get_java_vm failed: {}", e);
+            return;
+        }
+    };
     let vm_arc = Arc::new(vm);
-    let target_ref = env
-        .new_global_ref(&activity)
-        .expect("Failed to ref activity");
+    let target_ref = match env.new_global_ref(&activity) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("TranscribeFile init: new_global_ref failed: {}", e);
+            return;
+        }
+    };
 
     let state = TranscribeFileState {
         jvm: vm_arc.clone(),
@@ -89,7 +101,10 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_TranscribeFil
         None => return,
     };
 
-    let len = length as usize;
+    // jint is signed: a negative length must not become a huge usize
+    // allocation (#14) — clamp it into the existing empty-buffer error
+    // path below.
+    let len = if length > 0 { length as usize } else { 0 };
     if len == 0 {
         log::warn!("transcribeAudio called with empty buffer");
         let jvm = state.jvm.clone();

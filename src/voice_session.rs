@@ -56,9 +56,16 @@ const BACKLOG_KEEP_TAIL_SAMPLES: usize = 16000; // 1 s
 /// setting is ~0.15% WER (transcribe.cpp streaming validation table).
 const ATT_CONTEXT_RIGHT: i32 = 1;
 
+/// cpal::Stream is !Send by contract (backend thread affinity), but the
+/// stream must move from the JNI thread that opens it into the session
+/// state and the threads that stop the recording — ownership transfers
+/// only, never concurrent access (holders go through Mutex/Option and the
+/// audio callback is owned by the stream itself). Send is exactly that
+/// guarantee. Sync is NOT implemented: nothing ever needs shared
+/// concurrent access to the stream, and Mutex<Option<SendStream>> only
+/// requires Send to be shareable (#14).
 pub struct SendStream(#[allow(dead_code)] pub cpal::Stream);
 unsafe impl Send for SendStream {}
-unsafe impl Sync for SendStream {}
 
 /// Speech/silence tracking shared between the audio callback and the
 /// auto-stop monitor thread.
@@ -131,14 +138,21 @@ fn notify_partial(env: &mut JNIEnv, obj: &JObject, committed: &str, tentative: &
     }
 }
 
-pub fn init_session(env: JNIEnv, target: JObject) -> VoiceSessionState {
+pub fn init_session(env: JNIEnv, target: JObject) -> Result<VoiceSessionState, String> {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
 
-    let vm = env.get_java_vm().expect("Failed to get JavaVM");
+    // These can only fail on JVM/JNI misuse, but a failure must not abort
+    // the IME process (#14): surface it and leave the caller to log and
+    // run without native session state.
+    let vm = env
+        .get_java_vm()
+        .map_err(|e| format!("Failed to get JavaVM: {}", e))?;
     let vm_arc = Arc::new(vm);
-    let target_ref = env.new_global_ref(&target).expect("Failed to ref target");
+    let target_ref = env
+        .new_global_ref(&target)
+        .map_err(|e| format!("Failed to ref target: {}", e))?;
 
     let state = VoiceSessionState {
         stream: None,
@@ -160,7 +174,7 @@ pub fn init_session(env: JNIEnv, target: JObject) -> VoiceSessionState {
         let _ = engine::ensure_loaded_from_thread(&vm_clone, &target_ref_clone);
     });
 
-    state
+    Ok(state)
 }
 
 /// Begin microphone capture and start the streaming consumer thread. With

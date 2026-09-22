@@ -187,8 +187,11 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
     let device = match host.default_input_device() {
         Some(d) => d,
         None => {
-            let mut env2 = jvm.attach_current_thread().unwrap();
-            call_error(&mut env2, shared.target.as_obj(), ERROR_AUDIO);
+            // Error reporting must not itself abort the process if the JVM
+            // attach fails here (#14).
+            if let Ok(mut env2) = jvm.attach_current_thread() {
+                call_error(&mut env2, shared.target.as_obj(), ERROR_AUDIO);
+            }
             return;
         }
     };
@@ -296,8 +299,9 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
         Err(e) => {
             log::error!("Failed to open microphone: {}", e);
             *tx_holder.lock().unwrap() = None;
-            let mut env2 = jvm.attach_current_thread().unwrap();
-            call_error(&mut env2, shared.target.as_obj(), ERROR_AUDIO);
+            if let Ok(mut env2) = jvm.attach_current_thread() {
+                call_error(&mut env2, shared.target.as_obj(), ERROR_AUDIO);
+            }
             return;
         }
     }

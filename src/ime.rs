@@ -13,8 +13,10 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_RustInputMeth
     _class: JClass,
     service: JObject,
 ) {
-    let state = voice_session::init_session(env, service);
-    *IME_STATE.lock().unwrap() = Some(state);
+    match voice_session::init_session(env, service) {
+        Ok(state) => *IME_STATE.lock().unwrap() = Some(state),
+        Err(e) => log::error!("IME session init failed: {}", e),
+    }
 }
 
 #[no_mangle]

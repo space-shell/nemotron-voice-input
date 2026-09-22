@@ -104,11 +104,15 @@ public class VoiceRecognitionService extends RecognitionService {
         } catch (Throwable t) {
             Log.e(TAG, "cancel failed", t);
         }
+        // The client cancelled: already-posted runnables must no-op instead
+        // of firing into a dead callback afterwards (#14).
+        mCallback = null;
     }
 
     @Override
     public void onDestroy() {
         startDeferred = false;
+        mCallback = null;
         try {
             destroyNative();
         } catch (Throwable t) {
