@@ -1,0 +1,1 @@
+- urgent fix: v0.4.4 could crash-loop the keyboard process on Android 14+ when dictation started while the keyboard was still appearing — a system restriction on microphone foreground services was handled as a crash instead of degrading gracefully
