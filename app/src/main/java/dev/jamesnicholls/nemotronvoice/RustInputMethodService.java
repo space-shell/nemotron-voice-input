@@ -359,7 +359,11 @@ public class RustInputMethodService extends InputMethodService {
         windowVisible = true;
         if (isRecording) {
             // A background recording is still running (record-in-background
-            // setting): restore the recording UI.
+            // setting): restore the recording UI. The window is now
+            // genuinely visible, so a mic-FGS promotion that was denied
+            // during the show transition (Android 14+ while-in-use) gets a
+            // second chance here.
+            MicForegroundService.start(this);
             updateRecordButtonUI(true);
             return;
         }

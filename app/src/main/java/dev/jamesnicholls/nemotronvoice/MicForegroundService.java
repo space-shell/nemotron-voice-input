@@ -59,14 +59,30 @@ public class MicForegroundService extends Service {
                         new Intent(this, MainActivity.class),
                         PendingIntent.FLAG_IMMUTABLE))
                 .build();
-        if (Build.VERSION.SDK_INT >= 30) {
-            // The typed overload asserts the microphone type explicitly; on
-            // 29 the manifest type applies on its own, and below 29 types
-            // don't exist.
-            startForeground(NOTIFICATION_ID, notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                // The typed overload asserts the microphone type explicitly;
+                // on 29 the manifest type applies on its own, and below 29
+                // types don't exist.
+                startForeground(NOTIFICATION_ID, notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Throwable t) {
+            // Android 14+ denies microphone-type foreground promotion when
+            // the app is not in a while-in-use state — e.g. auto-record
+            // firing during the keyboard show transition, before the system
+            // registers the IME window as visible (observed crash-looping
+            // the :ime process on an S23: SecurityException out of
+            // startForeground, service restart, repeat). NEVER let this
+            // kill the process: degrade to running the recording without
+            // FGS protection — the freeze resilience carries it — and
+            // retry the promotion from onWindowShown once the window is
+            // genuinely visible.
+            Log.w(TAG, "mic foreground promotion denied; recording continues unprotected", t);
+            stopSelf();
+            return START_NOT_STICKY;
         }
         // Not sticky: if the process dies there is no recording left to
         // resume — the user simply taps record again.
