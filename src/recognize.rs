@@ -20,10 +20,17 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_RecognizeActi
 
 #[no_mangle]
 pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_RecognizeActivity_cleanupNative(
-    _env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) {
-    *RECOG_STATE.lock().unwrap() = None;
+    let mut guard = RECOG_STATE.lock().unwrap();
+    // Same as the IME cleanup: cancel any live session before dropping the
+    // state, or its consumer survives as an orphan holding the compute
+    // lease (and the mic) with no way to stop it.
+    if let Some(state) = guard.as_mut() {
+        voice_session::cancel_recording(env, state);
+    }
+    *guard = None;
 }
 
 #[no_mangle]
