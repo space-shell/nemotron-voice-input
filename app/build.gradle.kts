@@ -11,8 +11,8 @@ android {
         applicationId = "dev.jamesnicholls.nemotronvoice"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.4.3"
+        versionCode = 29
+        versionName = "0.4.4"
         ndk {
             abiFilters += "arm64-v8a"
         }

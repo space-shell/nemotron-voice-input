@@ -1,0 +1,1 @@
+- dictation that continues after the keyboard hides now runs as a proper foreground service with a visible "Voice input is active" notification — the process is no longer frozen by the OS mid-recording and the microphone is exempt from background silencing on Android 14+
