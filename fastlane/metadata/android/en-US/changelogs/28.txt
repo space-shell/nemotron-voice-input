@@ -1,0 +1,3 @@
+- fix: the keyboard invoked after a period of inactivity could stop transcribing within seconds and get stuck at "Processing" — Samsung's app freezer restarts the keyboard service in place, and the first recording after that restart overflowed; the engine now warms up before capturing and a slow start no longer kills the session
+- fix: a recording still running when the keyboard was switched away no longer blocks every later recording until the app is restarted
+- the screen now stays awake while the keyboard is visible
