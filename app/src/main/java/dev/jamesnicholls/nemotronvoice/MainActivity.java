@@ -36,11 +36,18 @@ public class MainActivity extends AppCompatActivity {
     static {
         try {
             System.loadLibrary("c++_shared");
+            System.loadLibrary("nemotron_voice_input");
         } catch (UnsatisfiedLinkError e) {
-            Log.w(TAG, "Failed to load c++_shared", e);
+            // Wrong-ABI device (the build is arm64-only): the launcher
+            // activity must not crash on load — degrade to a message and
+            // skip the native engine (#14).
+            nativeAvailable = false;
+            Log.e(TAG, "Failed to load native libraries", e);
         }
-        System.loadLibrary("nemotron_voice_input");
     }
+
+    // False when the native libraries failed to load (unsupported ABI).
+    static volatile boolean nativeAvailable = true;
 
     private TextView statusText;
     private TextView voiceStatusText;
@@ -191,6 +198,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void startNativeEngine() {
         if (nativeInited) return;
+        if (!nativeAvailable) {
+            if (voiceStatusText != null) {
+                voiceStatusText.setText("This device's CPU is not supported (arm64 builds only).");
+            }
+            return;
+        }
         nativeInited = true;
         initNative(this);
     }

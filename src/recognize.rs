@@ -14,8 +14,10 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_RecognizeActi
     _class: JClass,
     activity: JObject,
 ) {
-    let state = voice_session::init_session(env, activity);
-    *RECOG_STATE.lock().unwrap() = Some(state);
+    match voice_session::init_session(env, activity) {
+        Ok(state) => *RECOG_STATE.lock().unwrap() = Some(state),
+        Err(e) => log::error!("RecognizeActivity session init failed: {}", e),
+    }
 }
 
 #[no_mangle]

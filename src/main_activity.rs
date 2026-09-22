@@ -32,14 +32,25 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_MainActivity_
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
 
-    let vm = env.get_java_vm().expect("Failed to get JavaVM");
-    let vm_arc = Arc::new(vm);
-    let activity_ref = env
-        .new_global_ref(&activity)
-        .expect("Failed to ref activity");
+    // JNI setup failure must not abort the process (#14): log-and-return;
+    // the engine still loads lazily from the consumer paths later.
+    let vm = match env.get_java_vm() {
+        Ok(vm) => Arc::new(vm),
+        Err(e) => {
+            log::error!("MainActivity init: get_java_vm failed: {}", e);
+            return;
+        }
+    };
+    let activity_ref = match env.new_global_ref(&activity) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("MainActivity init: new_global_ref failed: {}", e);
+            return;
+        }
+    };
 
     std::thread::spawn(move || {
-        let _ = engine::ensure_loaded_from_thread(&vm_arc, &activity_ref);
+        let _ = engine::ensure_loaded_from_thread(&vm, &activity_ref);
     });
 }
 
@@ -54,9 +65,14 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_MainActivity_
     samples: jni::objects::JFloatArray,
     length: jni::sys::jint,
 ) {
+    // jint is signed: a negative length must not be cast to usize and
+    // turned into a huge allocation (#14).
+    if length <= 0 {
+        return;
+    }
     let len = length as usize;
     let mut buffer = vec![0.0f32; len];
-    if len == 0 || env.get_float_array_region(&samples, 0, &mut buffer).is_err() {
+    if env.get_float_array_region(&samples, 0, &mut buffer).is_err() {
         return;
     }
 
