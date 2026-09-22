@@ -33,10 +33,24 @@ const AUTO_STOP_NO_SPEECH_MS: u64 = 8000;
 // --- Streaming pipeline tuning ----------------------------------------------
 /// Audio fed to the model per `stream.feed` call: 100 ms at 16 kHz.
 const FEED_CHUNK_SAMPLES: usize = 1600;
-/// Channel capacity in chunks (~6.4 s of headroom). Inference on a phone-class
-/// SoC runs several times faster than realtime; this only trips if the device
+/// Channel capacity in capture-callback blocks. Block size is
+/// device-dependent: AAudio on Samsung delivers ~24 ms blocks, where the
+/// old 64-chunk capacity was only ~1.5 s of headroom — the first feed after
+/// an IME process unfreeze stalled that long once and the session died with
+/// "can't keep up". 256 blocks ≈ 6 s at 24 ms blocks (≈ 25 s at the 100 ms
+/// blocks the original estimate assumed). Inference on a phone-class SoC
+/// runs several times faster than realtime; this only trips if the device
 /// is thoroughly stalled, and the failure is loud rather than silent.
-const CHANNEL_CHUNKS: usize = 64;
+const CHANNEL_CHUNKS: usize = 256;
+/// Silence fed once before live audio: the first inference on a fresh
+/// session is far slower than steady state (post-freeze scheduling, cold
+/// model pages) and must not happen inside the realtime budget.
+const WARMUP_SAMPLES: usize = 3200; // 200 ms at 16 kHz
+/// When the consumer falls behind and audio piles up past this, drop the
+/// oldest and continue from the recent tail rather than grinding through
+/// the whole backlog (or overflowing and killing the session).
+const BACKLOG_TRIM_SAMPLES: usize = 48000; // 3 s
+const BACKLOG_KEEP_TAIL_SAMPLES: usize = 16000; // 1 s
 /// Cache-aware streaming lookahead: att_context_right = 1 (80 ms). First text
 /// arrives ~0.16 s after speech starts; the accuracy cost vs the max-accuracy
 /// setting is ~0.15% WER (transcribe.cpp streaming validation table).
@@ -429,6 +443,15 @@ fn stream_session_body(
         .stream(&transcribe_cpp::RunOptions::default(), &stream_opts)
         .map_err(|e| e.to_string())?;
 
+    // Warm up before live audio arrives: the first inference on a fresh
+    // session (stream begin + first decode) can stall for over a second —
+    // post-unfreeze scheduling, cold model pages — and with only seconds of
+    // channel headroom that stall overflowed and killed the very first
+    // recording after an IME process unfreeze. Doing the slow first pass on
+    // silence keeps it out of the realtime budget; 200 ms of leading
+    // silence is indistinguishable from the user pausing before speaking.
+    let _ = stream.feed(&vec![0.0f32; WARMUP_SAMPLES]);
+
     let started = std::time::Instant::now();
     let mut received_samples: usize = 0;
     let mut buf: Vec<f32> = Vec::new();
@@ -455,6 +478,21 @@ fn stream_session_body(
             // channel is empty, recv returns Disconnected immediately.
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Backlog trim: if the consumer stalled (post-unfreeze hiccup, page
+        // faults) and audio piled up, skip forward to the recent tail rather
+        // than grinding through the whole backlog while more arrives — the
+        // transcript loses the oldest few seconds instead of the session
+        // overflowing and dying.
+        if buf.len() > BACKLOG_TRIM_SAMPLES {
+            let dropped = buf.len() - BACKLOG_KEEP_TAIL_SAMPLES;
+            buf.drain(..dropped);
+            log::warn!(
+                "audio backlog {:.1}s; dropped {:.1}s oldest",
+                (dropped + BACKLOG_KEEP_TAIL_SAMPLES) as f32 / 16000.0,
+                dropped as f32 / 16000.0
+            );
         }
 
         while buf.len() >= FEED_CHUNK_SAMPLES {

@@ -348,6 +348,12 @@ public class RustInputMethodService extends InputMethodService {
         // on show transitions (InputMethodService#onConfigureWindow); the
         // floating params must be re-applied or the panel renders wrong.
         if (floatingMode) applyFloatingWindow();
+        // Keep the screen awake for as long as the keyboard is on screen:
+        // dictation sessions routinely outlast the default screen timeout
+        // (and a dimming screen mid-tap breaks the stop/cancel controls).
+        // Cleared in onWindowHidden so hidden background recording still
+        // lets the screen sleep.
+        if (inputView != null) inputView.setKeepScreenOn(true);
         boolean wasVisible = windowVisible;
         windowVisible = true;
         if (isRecording) {
@@ -382,6 +388,10 @@ public class RustInputMethodService extends InputMethodService {
         super.onWindowHidden();
         windowVisible = false;
         pendingAutoStart = false;
+        // Allow the screen to sleep once the keyboard is away — including
+        // during hidden background recording (the mic keeps running; the
+        // screen must not stay lit for it).
+        if (inputView != null) inputView.setKeepScreenOn(false);
         if (isRecording) {
             if (isStopOnHideEnabled()) {
                 // Opt-in behavior: discard the recording when the keyboard hides.
@@ -509,10 +519,13 @@ public class RustInputMethodService extends InputMethodService {
 
     private void updateRecordButtonUI(boolean recording) {
         isRecording = recording;
-        // Keep the screen awake while recording so it never sleeps mid-capture
-        // and cuts the recording short. Cleared automatically once we stop.
+        // Keep the screen awake while recording (so capture is never cut
+        // short by a timeout) and while the window is visible (see
+        // onWindowShown). A stopped recording must not clear the flag a
+        // visible window still needs; onWindowHidden is the one place that
+        // turns it off.
         if (inputView != null) {
-            inputView.setKeepScreenOn(recording);
+            inputView.setKeepScreenOn(recording || windowVisible);
         }
         tintRecordButton(recording);
         if (recording) {
