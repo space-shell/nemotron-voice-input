@@ -309,6 +309,7 @@ public class RustInputMethodService extends InputMethodService {
                 } catch (Throwable t) {
                     Log.w(TAG, "cancelRecording failed", t);
                 }
+                MicForegroundService.stop(this);
                 if (pauseAudioActive) {
                     audioPauser.abandon(this);
                     pauseAudioActive = false;
@@ -401,10 +402,13 @@ public class RustInputMethodService extends InputMethodService {
                     Log.w(TAG, "cancelRecording failed, falling back to stopRecording", t);
                     try { stopRecording(); } catch (Throwable ignored) { }
                 }
+                MicForegroundService.stop(this);
                 updateRecordButtonUI(false);
             } else {
                 // Default: keep recording in the background. The transcription
-                // is committed on return (or held in pendingCommitText).
+                // is committed on return (or held in pendingCommitText). The
+                // mic foreground service started in beginRecording keeps the
+                // process alive through this.
                 return;
             }
         }
@@ -464,6 +468,11 @@ public class RustInputMethodService extends InputMethodService {
             audioPauser.request(this);
             pauseAudioActive = true;
         }
+        // Promote to a mic foreground service while the window is still
+        // visible (a permitted state for mic-FGS start): if the recording
+        // outlives the keyboard being hidden, the :ime process stays
+        // freeze-ineligible and exempt from background-mic silencing (#8).
+        MicForegroundService.start(this);
         startRecording();
         updateRecordButtonUI(true);
     }
@@ -559,6 +568,7 @@ public class RustInputMethodService extends InputMethodService {
     public void onDestroy() {
         super.onDestroy();
         cleanupNative();
+        MicForegroundService.stop(this);
         if (pauseAudioActive) {
             audioPauser.abandon(this);
             pauseAudioActive = false;
@@ -595,6 +605,7 @@ public class RustInputMethodService extends InputMethodService {
                 } catch (Throwable t) {
                     Log.w(TAG, "stopRecording after error failed", t);
                 }
+                MicForegroundService.stop(this);
                 committedBase = "";
                 lastTentative = "";
                 pendingSend = false;
@@ -692,6 +703,7 @@ public class RustInputMethodService extends InputMethodService {
                 // a stray space.
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) ic.finishComposingText();
+                MicForegroundService.stop(this);
                 committedBase = "";
                 lastTentative = "";
                 updateRecordButtonUI(false);
@@ -784,6 +796,7 @@ public class RustInputMethodService extends InputMethodService {
             }
             committedBase = "";
             lastTentative = "";
+            MicForegroundService.stop(this);
             if (pauseAudioActive) {
                 audioPauser.abandon(this);
                 pauseAudioActive = false;
