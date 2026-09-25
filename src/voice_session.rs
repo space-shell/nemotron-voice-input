@@ -10,8 +10,8 @@
 //! inference falls behind the bounded channel fills and the session ends
 //! with an explicit error instead of silently dropping audio.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -41,7 +41,8 @@ const FEED_CHUNK_SAMPLES: usize = 1600;
 /// blocks the original estimate assumed). Inference on a phone-class SoC
 /// runs several times faster than realtime; this only trips if the device
 /// is thoroughly stalled, and the failure is loud rather than silent.
-const CHANNEL_CHUNKS: usize = 256;
+/// Shared with the RecognitionService capture path.
+pub const CHANNEL_CHUNKS: usize = 256;
 /// Silence fed once before live audio: the first inference on a fresh
 /// session is far slower than steady state (post-freeze scheduling, cold
 /// model pages) and must not happen inside the realtime budget.
@@ -67,19 +68,29 @@ const ATT_CONTEXT_RIGHT: i32 = 1;
 pub struct SendStream(#[allow(dead_code)] pub cpal::Stream);
 unsafe impl Send for SendStream {}
 
-/// Speech/silence tracking shared between the audio callback and the
-/// auto-stop monitor thread.
-struct Endpointing {
-    last_voice: Mutex<Instant>,
-    noise_floor: Mutex<f32>,
+/// Lock-free state published by the realtime capture callback (#6). The
+/// audio thread must not allocate, lock, or touch JNI — so it only does
+/// atomics against this struct: the latest mic level (for the meter
+/// forwarder), and the endpointing fields (for the auto-stop monitor).
+struct AudioState {
+    started: Instant,
+    /// Latest mic level, 0..1, stored as f32 bits.
+    level_bits: AtomicU32,
+    /// Millis since `started` of the last speech-classified callback.
+    last_voice_ms: AtomicU64,
+    /// Slowly-adapted noise floor, stored as f32 bits.
+    noise_floor_bits: AtomicU32,
     speech_started: AtomicBool,
+}
+
+fn elapsed_ms(start: &Instant) -> u64 {
+    start.elapsed().as_millis() as u64
 }
 
 pub struct VoiceSessionState {
     pub stream: Option<SendStream>,
     pub jvm: Arc<jni::JavaVM>,
     pub target_ref: GlobalRef,
-    pub last_level_sent: Arc<Mutex<std::time::Instant>>,
     /// True while the current recording runs; flipped off on stop/cancel so
     /// the auto-stop monitor (if any) exits.
     pub session_active: Arc<AtomicBool>,
@@ -158,7 +169,6 @@ pub fn init_session(env: JNIEnv, target: JObject) -> Result<VoiceSessionState, S
         stream: None,
         jvm: vm_arc.clone(),
         target_ref: target_ref.clone(),
-        last_level_sent: Arc::new(Mutex::new(std::time::Instant::now())),
         session_active: Arc::new(AtomicBool::new(false)),
         feed_tx: None,
         cancelled: Arc::new(AtomicBool::new(false)),
@@ -212,64 +222,77 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
     state.overflow = Arc::new(AtomicBool::new(false));
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let endpoint = if auto_stop {
-        Some(Arc::new(Endpointing {
-            last_voice: Mutex::new(Instant::now()),
-            noise_floor: Mutex::new(0.0),
-            speech_started: AtomicBool::new(false),
-        }))
-    } else {
-        None
-    };
+    // Lock-free state shared with the realtime callback (#6): the audio
+    // thread only publishes atomics here — the forwarder thread below does
+    // the upcalls, the auto-stop monitor reads the endpointing fields.
+    let audio = Arc::new(AudioState {
+        started: Instant::now(),
+        level_bits: AtomicU32::new(0),
+        last_voice_ms: AtomicU64::new(0),
+        noise_floor_bits: AtomicU32::new(0.0f32.to_bits()),
+        speech_started: AtomicBool::new(false),
+    });
 
+    // Capture → consumer channel, plus a recycle channel the consumer uses
+    // to hand emptied buffers back, so the realtime callback allocates only
+    // during the very first pass (#6).
     let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(CHANNEL_CHUNKS);
+    let (recycle_tx, recycle_rx) =
+        crossbeam_channel::bounded::<Vec<f32>>(CHANNEL_CHUNKS * 2);
     state.feed_tx = Some(tx.clone());
     let overflow = state.overflow.clone();
 
-    let jvm = state.jvm.clone();
-    let target_ref = state.target_ref.clone();
-    let last_sent = state.last_level_sent.clone();
-    let endpoint_cb = endpoint.clone();
-
+    let cb_audio = audio.clone();
+    let cb_tx = tx;
+    let cb_recycle = recycle_rx;
+    let cb_overflow = overflow.clone();
     let stream = device.build_input_stream(
         &config,
         move |data: &[f32], _: &_| {
-            // Never block the realtime callback: if the consumer is hopelessly
-            // behind, flag overflow and let it end the session loudly.
-            if tx.try_send(data.to_vec()).is_err() {
-                overflow.store(true, Ordering::SeqCst);
+            // The realtime contract (#6): no allocation (recycled buffers),
+            // no locks, no JNI. Reuse a returned buffer when one is
+            // available; the fallback allocates only before the consumer
+            // has cycled the first chunks through.
+            let mut chunk = match cb_recycle.try_recv() {
+                Ok(mut v) => {
+                    v.clear();
+                    v
+                }
+                Err(_) => Vec::with_capacity(data.len()),
+            };
+            chunk.extend_from_slice(data);
+            // Never block: if the consumer is hopelessly behind, flag
+            // overflow and let it end the session loudly.
+            if cb_tx.try_send(chunk).is_err() {
+                cb_overflow.store(true, Ordering::SeqCst);
             }
 
-            // compute RMS
+            // RMS → level is pure math.
             let mut sum = 0.0f32;
             for &x in data {
                 sum += x * x;
             }
             let rms = (sum / (data.len().max(1) as f32)).sqrt();
             let level = (rms * 6.0).clamp(0.0, 1.0);
+            cb_audio
+                .level_bits
+                .store(level.to_bits(), Ordering::Relaxed);
 
-            if let Some(ep) = &endpoint_cb {
-                let floor = *ep.noise_floor.lock().unwrap();
-                let is_speech = level > MIN_SPEECH_LEVEL && level > floor + SPEECH_MARGIN;
-                if is_speech {
-                    *ep.last_voice.lock().unwrap() = Instant::now();
-                    ep.speech_started.store(true, Ordering::SeqCst);
-                } else {
-                    // Slowly adapt the noise floor while no speech is present.
-                    let mut nf = ep.noise_floor.lock().unwrap();
-                    *nf = *nf * 0.95 + level * 0.05;
-                }
-            }
-
-            // throttle updates
-            let mut last = last_sent.lock().unwrap();
-            if last.elapsed() >= std::time::Duration::from_millis(50) {
-                *last = std::time::Instant::now();
-
-                if let Ok(mut env) = jvm.attach_current_thread() {
-                    let obj = target_ref.as_obj();
-                    notify_level(&mut env, obj, level);
-                }
+            // Endpointing, lock-free; the auto-stop monitor reads these.
+            let floor =
+                f32::from_bits(cb_audio.noise_floor_bits.load(Ordering::Relaxed));
+            let is_speech = level > MIN_SPEECH_LEVEL && level > floor + SPEECH_MARGIN;
+            if is_speech {
+                cb_audio
+                    .last_voice_ms
+                    .store(elapsed_ms(&cb_audio.started), Ordering::Relaxed);
+                cb_audio.speech_started.store(true, Ordering::SeqCst);
+            } else {
+                // Slowly adapt the noise floor while no speech is present.
+                let nf = floor * 0.95 + level * 0.05;
+                cb_audio
+                    .noise_floor_bits
+                    .store(nf.to_bits(), Ordering::Relaxed);
             }
         },
         |e| log::error!("Stream err: {}", e),
@@ -290,6 +313,7 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
                     jvm,
                     target_ref,
                     rx,
+                    recycle_tx,
                     cancelled.clone(),
                     overflow,
                     move || gen_ctr.load(Ordering::SeqCst) == generation,
@@ -319,24 +343,52 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
                 );
             });
 
+            // Level forwarder (#6): the only thread that upcalls the mic
+            // meter. The 50 ms cadence matches the old in-callback throttle,
+            // but the audio thread never attaches to the JVM. Attaches once
+            // and exits when the session flag drops.
+            {
+                let jvm = state.jvm.clone();
+                let target_ref = state.target_ref.clone();
+                let fwd_audio = audio.clone();
+                let fwd_active = session_active.clone();
+                std::thread::spawn(move || {
+                    let mut env = match jvm.attach_current_thread() {
+                        Ok(e) => e,
+                        Err(_) => return,
+                    };
+                    let obj = target_ref.as_obj();
+                    while fwd_active.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(50));
+                        if !fwd_active.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let level =
+                            f32::from_bits(fwd_audio.level_bits.load(Ordering::Relaxed));
+                        notify_level(&mut env, obj, level);
+                    }
+                });
+            }
+
             s.play().ok();
             state.stream = Some(SendStream(s));
             notify_status(&mut env, state.target_ref.as_obj(), "Listening...");
 
-            if let Some(ep) = endpoint {
+            if auto_stop {
                 let jvm = state.jvm.clone();
                 let target_ref = state.target_ref.clone();
                 let gen_ctr_monitor = state.generation.clone();
+                let mon_audio = audio.clone();
                 let started_at = Instant::now();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_millis(100));
                     if !session_active.load(Ordering::SeqCst) {
                         return;
                     }
-                    let speech = ep.speech_started.load(Ordering::SeqCst);
-                    let silence = ep.last_voice.lock().unwrap().elapsed();
-                    let done = (speech
-                        && silence >= Duration::from_millis(AUTO_STOP_SILENCE_MS))
+                    let speech = mon_audio.speech_started.load(Ordering::SeqCst);
+                    let silence_ms = elapsed_ms(&mon_audio.started)
+                        - mon_audio.last_voice_ms.load(Ordering::Relaxed);
+                    let done = (speech && silence_ms >= AUTO_STOP_SILENCE_MS)
                         || (!speech
                             && started_at.elapsed()
                                 >= Duration::from_millis(AUTO_STOP_NO_SPEECH_MS));
@@ -386,7 +438,8 @@ pub fn start_recording(mut env: JNIEnv, state: &mut VoiceSessionState, auto_stop
 /// it must return false once this recording is no longer the current one, so
 /// a consumer still draining an old session cannot push stale partials into
 /// a newer one (#4). The final `deliver` should get the same guard from its
-/// caller.
+/// caller. `recycle` receives the emptied audio buffers back so the capture
+/// callback's pool avoids steady-state allocation (#6).
 ///
 /// Runs on the CALLING thread and blocks for the entire recording — callers
 /// must invoke it on a dedicated thread. The name used to say "spawn", which
@@ -396,6 +449,7 @@ pub fn run_stream_consumer<F>(
     jvm: Arc<jni::JavaVM>,
     target_ref: GlobalRef,
     rx: crossbeam_channel::Receiver<Vec<f32>>,
+    recycle: crossbeam_channel::Sender<Vec<f32>>,
     cancelled: Arc<AtomicBool>,
     overflow: Arc<AtomicBool>,
     is_current: impl Fn() -> bool + Send + 'static,
@@ -404,7 +458,15 @@ pub fn run_stream_consumer<F>(
     F: FnOnce(&mut JNIEnv, &JObject, Result<String, String>) + Send + 'static,
 {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stream_session_body(&jvm, &target_ref, rx, &cancelled, &overflow, &is_current)
+        stream_session_body(
+            &jvm,
+            &target_ref,
+            rx,
+            &recycle,
+            &cancelled,
+            &overflow,
+            &is_current,
+        )
     }))
     .unwrap_or_else(|_| {
         log::error!("streaming consumer panicked; reporting as error");
@@ -422,6 +484,7 @@ fn stream_session_body(
     jvm: &Arc<jni::JavaVM>,
     target_ref: &GlobalRef,
     rx: crossbeam_channel::Receiver<Vec<f32>>,
+    recycle: &crossbeam_channel::Sender<Vec<f32>>,
     cancelled: &Arc<AtomicBool>,
     overflow: &Arc<AtomicBool>,
     is_current: &dyn Fn() -> bool,
@@ -483,9 +546,13 @@ fn stream_session_body(
         }
 
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(chunk) => {
+            Ok(mut chunk) => {
                 received_samples += chunk.len();
                 buf.extend_from_slice(&chunk);
+                // Hand the emptied buffer back to the capture callback's
+                // pool (#6) so the realtime path stops allocating.
+                chunk.clear();
+                let _ = recycle.try_send(chunk);
             }
             // A timeout just means quiet audio: keep looping (flags are
             // re-checked at the top). When every sender is dropped and the
