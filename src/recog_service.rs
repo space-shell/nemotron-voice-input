@@ -11,7 +11,7 @@
 //! `stopListening`, silence, or no-speech timeout) just ends the stream. The previous
 //! 60 s hard cap is gone — the streaming model has constant memory.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use jni::JNIEnv;
 use once_cell::sync::Lazy;
 
 use crate::engine;
-use crate::voice_session::{run_stream_consumer, SendStream};
+use crate::voice_session::{self, run_stream_consumer, SendStream};
 
 // --- Endpointing / VAD tuning -------------------------------------------------
 // These are deliberately simple heuristics on the smoothed mic level. Mic gain
@@ -37,7 +37,8 @@ const SPEECH_MARGIN: f32 = 0.08;
 const SILENCE_MS: u64 = 1500;
 /// If no speech is ever detected, finalise after this long anyway.
 const NO_SPEECH_TIMEOUT_MS: u64 = 7000;
-/// Throttle interval for `rmsChanged` UI callbacks.
+/// Cadence of the level-forwarder thread's `rmsChanged` upcalls (the only
+/// thread allowed to touch JNI for live audio state, #6).
 const LEVEL_UPDATE_MS: u64 = 50;
 /// Grace period before a finalized-but-undelivered recognition is reported
 /// as a stall error instead of leaving the caller waiting forever (#16).
@@ -51,10 +52,16 @@ const ERROR_NO_MATCH: i32 = 7;
 /// State shared between the audio callback, the endpoint-monitor thread and
 /// the finaliser. Deliberately does NOT hold the cpal stream or the channel
 /// sender, to avoid cycles (the stream's callback holds an `Arc<Endpoint>`).
+/// The realtime callback only touches the atomics here (#6): mutexes on the
+/// audio thread are priority-inversion hazards, and f32s ride in bit-packed
+/// atomics.
 struct Endpoint {
-    last_voice: Mutex<Instant>,
-    noise_floor: Mutex<f32>,
-    last_level_sent: Mutex<Instant>,
+    /// Millis since `started_at` of the last speech-classified callback.
+    last_voice_ms: AtomicU64,
+    /// Slowly-adapted noise floor, stored as f32 bits.
+    noise_floor_bits: AtomicU32,
+    /// Latest mic level (f32 bits) for the forwarder thread's upcalls.
+    level_bits: AtomicU32,
     speech_started: AtomicBool,
     finalized: AtomicBool,
     /// Set when the consumer's delivery closure ran at all — the stall
@@ -159,9 +166,9 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
 
     let now = Instant::now();
     let shared = Arc::new(Endpoint {
-        last_voice: Mutex::new(now),
-        noise_floor: Mutex::new(0.0),
-        last_level_sent: Mutex::new(now),
+        last_voice_ms: AtomicU64::new(0),
+        noise_floor_bits: AtomicU32::new(0.0f32.to_bits()),
+        level_bits: AtomicU32::new(0),
         speech_started: AtomicBool::new(false),
         finalized: AtomicBool::new(false),
         delivered: AtomicBool::new(false),
@@ -201,18 +208,26 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
         buffer_size: cpal::BufferSize::Default,
     };
 
-    // Capture → consumer channel. The consumer (run_stream_consumer) owns
-    // the streaming session; dropping the sender finalises it.
-    let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
+    // Capture → consumer channel, plus the buffer-recycle channel the
+    // consumer uses to hand emptied chunks back so the realtime callback
+    // allocates only during the very first pass (#6). The consumer
+    // (run_stream_consumer) owns the streaming session; dropping the sender
+    // finalises it.
+    let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(voice_session::CHANNEL_CHUNKS);
+    let (recycle_tx, recycle_rx) =
+        crossbeam_channel::bounded::<Vec<f32>>(voice_session::CHANNEL_CHUNKS * 2);
     let tx_holder: Arc<Mutex<Option<crossbeam_channel::Sender<Vec<f32>>>>> =
         Arc::new(Mutex::new(Some(tx.clone())));
 
     let cb_shared = shared.clone();
     let cb_overflow = overflow.clone();
     let cb_tx = tx;
+    let cb_recycle = recycle_rx;
     let stream = device.build_input_stream(
         &config,
-        move |data: &[f32], _: &_| audio_callback(&cb_shared, &cb_tx, &cb_overflow, data),
+        move |data: &[f32], _: &_| {
+            audio_callback(&cb_shared, &cb_tx, &cb_recycle, &cb_overflow, data)
+        },
         |e| log::error!("RecognitionService stream error: {}", e),
         None,
     );
@@ -251,6 +266,7 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
                     jvm.clone(),
                     deliver_shared.target.clone(),
                     rx,
+                    recycle_tx,
                     deliver_cancelled.clone(),
                     deliver_overflow,
                     move || is_current_session(&current_shared),
@@ -304,6 +320,37 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
             }
             return;
         }
+    }
+
+    // Level + beginning-of-speech forwarder (#6): the only thread that
+    // touches JNI for live audio state. The realtime callback used to
+    // attach the JVM and upcall onRmsChanged/onBeginningOfSpeech directly;
+    // now it only publishes atomics, and this thread — attached once —
+    // forwards at the same 50 ms cadence and fires beginningOfSpeech on the
+    // first speech transition. Exits when the session finalizes.
+    {
+        let fwd = shared.clone();
+        std::thread::spawn(move || {
+            let mut env = match fwd.jvm.attach_current_thread() {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let obj = fwd.target.as_obj();
+            let mut was_speech = false;
+            loop {
+                std::thread::sleep(Duration::from_millis(LEVEL_UPDATE_MS));
+                if fwd.finalized.load(Ordering::SeqCst) {
+                    break;
+                }
+                let level = f32::from_bits(fwd.level_bits.load(Ordering::Relaxed));
+                call_rms(&mut env, obj, level * 10.0);
+                let speech = fwd.speech_started.load(Ordering::SeqCst);
+                if speech && !was_speech {
+                    call_void(&mut env, obj, "onBeginningOfSpeech");
+                }
+                was_speech = speech;
+            }
+        });
     }
 
     // Endpoint monitor.
@@ -363,6 +410,7 @@ pub unsafe extern "system" fn Java_dev_jamesnicholls_nemotronvoice_VoiceRecognit
 fn audio_callback(
     shared: &Arc<Endpoint>,
     tx: &crossbeam_channel::Sender<Vec<f32>>,
+    recycle: &crossbeam_channel::Receiver<Vec<f32>>,
     overflow: &AtomicBool,
     data: &[f32],
 ) {
@@ -370,48 +418,48 @@ fn audio_callback(
         return;
     }
 
-    // Never block the realtime callback; overflow is handled by the monitor.
-    if tx.try_send(data.to_vec()).is_err() {
+    // The realtime contract (#6): no allocation (recycled buffers), no
+    // locks, no JNI. Reuse a returned buffer when one is available; the
+    // fallback allocates only before the consumer has cycled the first
+    // chunks through.
+    let mut chunk = match recycle.try_recv() {
+        Ok(mut v) => {
+            v.clear();
+            v
+        }
+        Err(_) => Vec::with_capacity(data.len()),
+    };
+    chunk.extend_from_slice(data);
+    // Never block; overflow is handled by the monitor.
+    if tx.try_send(chunk).is_err() {
         overflow.store(true, Ordering::SeqCst);
     }
 
-    // RMS -> smoothed level in 0..1 (same scaling as voice_session).
+    // RMS -> smoothed level in 0..1 (same scaling as voice_session), then
+    // publish + endpointing via atomics only — the forwarder thread does
+    // the upcalls.
     let mut sum = 0.0f32;
     for &x in data {
         sum += x * x;
     }
     let rms = (sum / (data.len().max(1) as f32)).sqrt();
     let level = (rms * 6.0).clamp(0.0, 1.0);
+    shared.level_bits.store(level.to_bits(), Ordering::Relaxed);
 
-    let floor = *shared.noise_floor.lock().unwrap();
+    let floor = f32::from_bits(shared.noise_floor_bits.load(Ordering::Relaxed));
     let is_speech = level > MIN_SPEECH_LEVEL && level > floor + SPEECH_MARGIN;
 
     if is_speech {
-        *shared.last_voice.lock().unwrap() = Instant::now();
-        // First detected speech -> notify beginningOfSpeech exactly once.
-        if shared
-            .speech_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            if let Ok(mut env) = shared.jvm.attach_current_thread() {
-                call_void(&mut env, shared.target.as_obj(), "onBeginningOfSpeech");
-            }
-        }
+        shared
+            .last_voice_ms
+            .store(shared.started_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+        // The forwarder fires beginningOfSpeech on the first observed
+        // transition to speech (#6 — no JNI from this callback).
+        shared.speech_started.store(true, Ordering::SeqCst);
     } else {
         // Slowly adapt the noise floor while no speech is present.
-        let mut nf = shared.noise_floor.lock().unwrap();
-        *nf = *nf * 0.95 + level * 0.05;
-    }
-
-    // Throttled mic-level updates for the keyboard's waveform UI.
-    let mut last = shared.last_level_sent.lock().unwrap();
-    if last.elapsed() >= Duration::from_millis(LEVEL_UPDATE_MS) {
-        *last = Instant::now();
-        drop(last);
-        if let Ok(mut env) = shared.jvm.attach_current_thread() {
-            call_rms(&mut env, shared.target.as_obj(), level * 10.0);
-        }
+        let nf = floor * 0.95 + level * 0.05;
+        shared.noise_floor_bits.store(nf.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -430,10 +478,11 @@ fn endpoint_monitor(
 
         let elapsed = shared.started_at.elapsed();
         let speech = shared.speech_started.load(Ordering::SeqCst);
-        let silence = shared.last_voice.lock().unwrap().elapsed();
+        let silence_ms = shared.started_at.elapsed().as_millis() as u64
+            - shared.last_voice_ms.load(Ordering::Relaxed);
 
         let done = overflow.load(Ordering::SeqCst)
-            || (speech && silence >= Duration::from_millis(SILENCE_MS))
+            || (speech && silence_ms >= SILENCE_MS)
             || (!speech && elapsed >= Duration::from_millis(NO_SPEECH_TIMEOUT_MS));
 
         if done {
