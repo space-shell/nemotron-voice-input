@@ -1,0 +1,2 @@
+- audio capture no longer allocates, locks, or touches the Java runtime from the realtime microphone thread — fewer glitches and dropped frames when the device is busy
+- the speech-provider path also gets a larger audio buffer, so a slow start no longer ends the recognition early
