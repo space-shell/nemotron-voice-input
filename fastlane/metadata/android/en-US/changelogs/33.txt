@@ -1,0 +1,2 @@
+- updated the transcription engine (transcribe.cpp 0.2.4): lower memory use on long file transcriptions, updated CPU kernels, and accurate out-of-memory errors on low-RAM devices
+- note: transcripts may differ marginally from the previous version on identical audio (upstream kernel changes)
