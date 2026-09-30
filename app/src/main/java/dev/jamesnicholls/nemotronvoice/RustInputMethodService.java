@@ -958,6 +958,22 @@ public class RustInputMethodService extends InputMethodService {
         }
     }
 
+    /**
+     * Never enter fullscreen/extract mode. The extract view — an
+     * ExtractEditText plus the editor action button, both permanently part
+     * of the IME window's decor — becomes visible when fullscreen
+     * evaluation turns on, which the default does in landscape on tablets:
+     * the result is a pane above the keyboard showing a live preview of
+     * the field (just an echo of the streaming transcription, already
+     * visible in the field itself) with the action button rendered as
+     * "Done" beside it. The voice panel is the whole UI; the duplicate
+     * pane only steals screen space.
+     */
+    @Override
+    public boolean onEvaluateFullscreenMode() {
+        return false;
+    }
+
     @Override
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
