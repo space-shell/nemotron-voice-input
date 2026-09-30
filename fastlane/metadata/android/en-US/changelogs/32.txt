@@ -1,0 +1,1 @@
+- removed the duplicate live-preview pane (with its "Done" button) that appeared above the keyboard in landscape on tablets — the transcribed text is already visible in the field itself
